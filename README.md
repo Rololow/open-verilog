@@ -35,13 +35,8 @@ was checked by simulation (see the project notes).
 
 ### Not yet implemented
 
-- The standard library (`ovc/stdlib.ov`): the crate ships the part it supports (`Stream`, `Fifo`, `Slice`, in
-  `src/stdlib/stdlib.ov`). `Arbiter` needs statement-level `val` and arrays of bundles; the AXI monitors need the
-  `monitor` role.
-- Output modes of the reference: `--emit-isa-sv`, `--emit-isa-py`, `--emit-doc`, `--emit-c`, `--emit-py`,
-  `--emit-dts`, `--emit-tb`, `ovc build` (multi-file projects), `ovc lint`, `ovc cover`.
-- Pipeline-level `clock` and `reset` directives (pipelines use the `clk` and `rst` ports).
-- `memmap`, `regmap` and `export struct` (layouts shared with software).
+- `ovc lint` and `ovc cover` of the reference: the Rust CLI does not have these subcommands yet.
+- Asynchronous pipeline resets (`reset NAME async;`): pipelines are reset synchronously.
 
 Anything not supported is reported with a positioned error, not silently dropped.
 

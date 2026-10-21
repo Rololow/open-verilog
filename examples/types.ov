@@ -1,0 +1,30 @@
+// SystemVerilog-style packages, typedefs, packed structs, enums and functions, next to .ov-style ones.
+// Packed structs are flattened to bit vectors; `p.field` becomes a part-select (first field = MSBs).
+package Defs;
+  typedef logic [7:0] byte_t;
+  typedef struct packed {
+    logic [3:0] kind;
+    byte_t payload;
+    logic parity;
+  } pkt_t;
+  typedef enum logic [1:0] { RED, GREEN, BLUE } color_t;
+  localparam int PKT_W = 13;
+  function automatic logic parity_of(input logic [7:0] v);
+    return ^v;
+  endfunction
+endpackage
+
+module Pack import Defs::*; (input byte_t data, input logic [3:0] kind, output pkt_t pkt, output color_t c);
+  assign pkt.kind = kind;
+  assign pkt.payload = data;
+  assign pkt.parity = parity_of(data);
+  assign c = data[0] ? GREEN : RED;
+endmodule
+
+// .ov style: no typedef needed
+struct Pair { logic [7:0] hi; logic [7:0] lo; }
+
+module Swap(input Pair p, output Pair q) {
+  assign q.hi = p.lo;
+  assign q.lo = p.hi;
+}

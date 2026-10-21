@@ -1,0 +1,17 @@
+// Structs in structs: a field that is a struct has the packed type of that struct, and its members are read and
+// written as `p.inner.x`.
+struct Point { logic [7:0] x; logic [7:0] y; }
+
+struct Segment { Point from; Point to; logic [3:0] tag; }
+
+module Span(input Segment s, output logic [8:0] dx, output logic [3:0] tag) {
+  assign dx = s.to.x - s.from.x;
+  assign tag = s.tag;
+}
+
+module Start(input logic [7:0] x, input logic [7:0] y, output Segment s) {
+  assign s.from.x = x;
+  assign s.from.y = y;
+  assign s.to = s.from;
+  assign s.tag = 3;
+}

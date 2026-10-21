@@ -1,0 +1,27 @@
+// enum + declarative fsm.
+// States become localparams; `goto X;` writes the next state; clock/reset are implicit.
+enum State { IDLE, BUSY, DONE }
+
+module Handshake(input clk, input rst, input req, output logic ack, output logic busy) {
+  fsm State state = IDLE {
+    ack = 0;                          // default values (avoid latches)
+    busy = 0;
+    IDLE: { if (req) goto BUSY; }
+    BUSY: { busy = 1; goto DONE; }
+    DONE: { ack = 1; goto IDLE; }
+  }
+}
+
+// enum with an explicit type and values, used as a port type and in a case.
+enum Op : logic [1:0] { ADD = 0, SUB = 1, AND = 3 }
+
+module Alu(input Op op, input logic [7:0] a, input logic [7:0] b, output logic [7:0] y) {
+  always_comb {
+    case (op) {
+      Op.ADD: y = (a + b).wrap();
+      Op.SUB: y = (a - b).wrap();
+      Op.AND: y = a & b;
+      default: y = 0;
+    }
+  }
+}

@@ -1,0 +1,47 @@
+// Pipelines: stages contain only combinational logic.
+// The compiler adds the registers, the valid bits and the stall/flush handling.
+
+// y = a*b + c, 3 stages. `p` is carried up to the stage that uses it; so is `c`, an input: read in a later stage,
+// `add.c` says it is the value that came with this computation (`pipe.c` would be its value now).
+pipeline Mac(
+  input clk, input rst, input logic valid_in,
+  input logic [7:0] a, input logic [7:0] b, input logic [7:0] c,
+  output logic [15:0] y, output logic valid_out
+) {
+  stage mul {
+    logic [15:0] p = a * b;
+  }
+  stage add {
+    logic [15:0] s = (p + add.c).wrap();  // fits: a*b + c <= 65280
+  }
+  stage out {
+    assign y = s;
+  }
+}
+
+// External stall in stage s1: nothing is lost, upstream is blocked (ready_out = 0).
+// `pipe.stall` reads the raw (undelayed) port.
+pipeline Slow(
+  input clk, input rst, input logic valid_in, input logic [7:0] d, input logic stall,
+  output logic [7:0] y, output logic valid_out, output logic ready_out
+) {
+  stage s0 { logic [7:0] a = (d + 1).wrap(); }
+  stage s1 {
+    logic [7:0] b = (a + 1).wrap();
+    stall_when(pipe.stall);
+  }
+  stage s2 { assign y = (b + 1).wrap(); }
+}
+
+// flush_when in s1: kills the instruction in s1 and the ones in s0.
+pipeline Flushy(
+  input clk, input rst, input logic valid_in, input logic [7:0] d, input logic kill,
+  output logic [7:0] y, output logic valid_out
+) {
+  stage s0 { logic [7:0] a = d; }
+  stage s1 {
+    logic [7:0] b = a;
+    flush_when(pipe.kill);
+  }
+  stage s2 { assign y = b; }
+}

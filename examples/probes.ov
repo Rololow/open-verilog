@@ -1,0 +1,22 @@
+// Debug probes kept out of the design: --emit-probes probes.sv binds them into every instance of Pe;
+// simulate with the extra top module ovc_probes and +ovc_probe (or +ovc_probe=pe_acc) to see them.
+
+module Pe(input clk, input rst, input logic [1:0] mode, input logic [7:0] din, output logic [7:0] acc) {
+  logic [7:0] prod;
+  assign prod = (din * 3).wrap();
+  always_ff @(posedge clk) { if (rst) { acc <= 0; } else if (mode == 2) { acc <= (acc + prod).wrap(); } }
+}
+module Top(input clk, input rst, input logic [1:0] mode, input logic [7:0] din, output logic [7:0] a0, output logic [7:0] a1) {
+  Pe p0(.clk, .rst, .mode, .din, .acc(a0));
+  Pe p1(.clk, .rst, .mode(2'd2), .din, .acc(a1));
+}
+
+probe pe_acc on Pe when (mode == 2) limit 3 {
+  print("din=%0d prod=%0d acc=%0d", din, prod, acc);
+}
+
+test "accumulates" for Top {
+  din = 5; mode = 2;
+  step(4);
+  expect(a0 == 60);
+}

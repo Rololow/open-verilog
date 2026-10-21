@@ -138,6 +138,8 @@ pub enum ItemKind {
     Val { name: String, expr: Expr },
     /// `reset NAME [low] [async];`: the module's reset.
     Reset { name: String, low: bool, is_async: bool },
+    /// `clock NAME;`: a pipeline's clock (the module's `clk` port by default).
+    Clock { name: String },
     /// `fsm Enum state = INIT { defaults; LABEL: { ... } }`: a state register and its next-state logic.
     Fsm { enum_name: String, name: String, init: String, defaults: Vec<Stmt>, arms: Vec<(String, Stmt)> },
     /// A pure function `fn name(params) [-> type] { return body; }`; calls are inlined.

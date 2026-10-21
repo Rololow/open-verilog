@@ -1,0 +1,19 @@
+// Packed structs in arrays, parameterized structs, and structs in structs: each is a SystemVerilog packed type,
+// its package names the field types it uses (an instance of a parameterized struct has its own package).
+struct Pix { logic [7:0] r; logic [7:0] g; }
+
+struct Box<int W> { logic [W-1:0] v; logic [W-1:0] w; }
+
+struct Pair { Box<4> a; Box<4> b; }
+
+module Sum(input Vec<Pix, 4> px, output logic [8:0] s) {
+  assign s = px[2].r + px[3].g;
+}
+
+module Mix(input Pair p, output logic [3:0] q) {
+  assign q = p.a.v ^ p.b.w;
+}
+
+module Wide(input Box<8> b, output logic [7:0] y) {
+  assign y = b.v & b.w;
+}

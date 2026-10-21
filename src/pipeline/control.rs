@@ -154,7 +154,7 @@ pub struct Carried {
 
 /// The register boundaries: for each stage after the first, the valid bit and the carried values move forward.
 /// A stall freezes them, a kill clears the valid bit, reset clears it too.
-pub fn boundaries(plan: &Plan, names: &[&str], valid: &[String], carried: &[Carried], clock: &str, rst: &str, pos: Pos) -> Vec<Item> {
+pub fn boundaries(plan: &Plan, names: &[&str], valid: &[String], carried: &[Carried], clock: &str, rst: Expr, pos: Pos) -> Vec<Item> {
     let n = names.len();
     let mut out = Vec::new();
     for j in 1..n {
@@ -174,7 +174,7 @@ pub fn boundaries(plan: &Plan, names: &[&str], valid: &[String], carried: &[Carr
             }];
         }
         let mut body = vec![Stmt::If {
-            cond: ident(rst, pos),
+            cond: rst.clone(),
             then: Box::new(Stmt::Block(vec![nonblocking_num(&valid[j], "1'b0", pos)])),
             els: Some(Box::new(Stmt::Block(advance))),
         }];

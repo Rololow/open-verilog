@@ -40,7 +40,41 @@ pub struct Lowered {
 }
 
 /// Lowers a pipeline module to a plain module.
-pub fn lower(source: &Module, file: &str, asserts: bool) -> Result<Lowered> {
+/// The clock and reset a pipeline names with its directives (`clock NAME;`, `reset NAME [low];`), if it has them.
+#[derive(Default)]
+pub struct Directives {
+    pub clock: Option<String>,
+    pub reset: Option<(String, bool)>,
+}
+
+/// The directives of a pipeline module, read from its source. An asynchronous reset is not supported yet.
+pub fn directives(m: &Module, file: &str) -> Result<Directives> {
+    let mut out = Directives::default();
+    for item in &m.items {
+        match &item.kind {
+            ItemKind::Clock { name } => out.clock = Some(name.clone()),
+            ItemKind::Reset { name, low, is_async } => {
+                if *is_async {
+                    return Err(Error::new("an asynchronous pipeline reset is not supported yet", file, item.pos.0, item.pos.1));
+                }
+                out.reset = Some((name.clone(), *low));
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The reset of the ports, by the reference's names: rst and reset (active high), rst_n, reset_n, resetn (active low).
+fn default_reset(ports: &HashMap<&str, &Port>) -> Option<(String, bool)> {
+    [("rst", false), ("reset", false), ("rst_n", true), ("reset_n", true), ("resetn", true)]
+        .into_iter()
+        .find(|(n, _)| ports.contains_key(*n))
+        .map(|(n, low)| (n.to_string(), low))
+}
+
+/// Lowers a pipeline module to a plain module. The clock and reset are the directives', else the ports'.
+pub fn lower(source: &Module, file: &str, asserts: bool, directives: &Directives) -> Result<Lowered> {
     let scalar = arrays::scalarize(source, file)?;
     let m = &scalar;
     let err = |pos: Pos, msg: String| Error::new(msg, file, pos.0, pos.1);
@@ -56,13 +90,33 @@ pub fn lower(source: &Module, file: &str, asserts: bool) -> Result<Lowered> {
         return Err(err(m.pos, format!("pipeline '{}' has no stages", m.name)));
     }
     let ports: HashMap<&str, &Port> = m.ports.iter().map(|p| (p.name.as_str(), p)).collect();
-    if !ports.contains_key("clk") {
-        return Err(err(m.pos, format!("pipeline '{}' has no clock: add a 'clk' port", m.name)));
+    let clock = directives.clock.clone().unwrap_or_else(|| "clk".to_string());
+    if !ports.contains_key(clock.as_str()) {
+        return Err(err(m.pos, format!("pipeline '{}' has no clock: add a '{clock}' port", m.name)));
     }
-    if stages.len() > 1 && !ports.contains_key("rst") {
+    let reset = directives.reset.clone().or_else(|| default_reset(&ports));
+    if let Some((name, _)) = &reset {
+        if !ports.contains_key(name.as_str()) {
+            return Err(err(m.pos, format!("pipeline '{}' is reset by '{name}', which is not a port", m.name)));
+        }
+    }
+    if stages.len() > 1 && reset.is_none() {
         return Err(err(m.pos, format!("pipeline '{}' has no reset: add an 'rst' port", m.name)));
     }
-    let owners = find_owners(m, &stages, &ports).map_err(|(pos, msg)| err(pos, msg))?;
+    // the reset as the condition that clears the registers, and as the text the checks use (inverted when low)
+    let reset_name = reset.as_ref().map_or_else(|| "rst".to_string(), |(n, _)| n.clone());
+    let reset_cond = match &reset {
+        Some((n, true)) => Expr::Unary("!".into(), Box::new(Expr::Ident(n.clone(), m.pos))),
+        Some((n, false)) => Expr::Ident(n.clone(), m.pos),
+        None => Expr::Ident("rst".into(), m.pos),
+    };
+    let reset_text = match &reset {
+        Some((n, true)) => format!("!{n}"),
+        Some((n, false)) => n.clone(),
+        None => "rst".to_string(),
+    };
+    let control_names = [clock.as_str(), reset_name.as_str(), "valid_in", "valid_out", "ready_out"];
+    let owners = find_owners(m, &stages, &ports, &control_names).map_err(|(pos, msg)| err(pos, msg))?;
 
     let mut lowering = Lowering { stages: &stages, owners: &owners, uses: BTreeMap::new(), fires: BTreeSet::new(), data_inputs: Vec::new(), file };
     let (body, controls) = lowering.body(m)?;
@@ -121,7 +175,7 @@ pub fn lower(source: &Module, file: &str, asserts: bool) -> Result<Lowered> {
     let valid_in = if has_valid_in { Expr::Ident("valid_in".into(), module_pos) } else { Expr::Num("1'b1".into()) };
     out.push(generated(ItemKind::ContAssign { lhs: Expr::Ident(valid[0].clone(), module_pos), rhs: valid_in }));
     out.extend(body);
-    for item in control::boundaries(&plan, &names, &valid, &carried, "clk", "rst", module_pos) {
+    for item in control::boundaries(&plan, &names, &valid, &carried, &clock, reset_cond, module_pos) {
         out.push(item);
     }
     if ports.contains_key("valid_out") {
@@ -143,8 +197,8 @@ pub fn lower(source: &Module, file: &str, asserts: bool) -> Result<Lowered> {
         let subject = Subject {
             name: &m.name,
             names: &names,
-            clock: "clk",
-            rst: "rst",
+            clock: clock.as_str(),
+            rst: reset_text.as_str(),
             has_valid_in,
             data_inputs: &lowering.data_inputs,
         };
@@ -182,7 +236,7 @@ fn decl_of(dtype: DType, name: String, dims: Vec<Expr>) -> ItemKind {
 }
 
 /// Which stage defines each signal. Inputs (other than the control ports) belong to stage 0.
-fn find_owners(m: &Module, stages: &[Stage], ports: &HashMap<&str, &Port>) -> std::result::Result<HashMap<String, Signal>, (Pos, String)> {
+fn find_owners(m: &Module, stages: &[Stage], ports: &HashMap<&str, &Port>, control: &[&str]) -> std::result::Result<HashMap<String, Signal>, (Pos, String)> {
     let pipeline_decls: HashMap<&str, (&DType, &Vec<Expr>)> = m
         .items
         .iter()
@@ -192,7 +246,6 @@ fn find_owners(m: &Module, stages: &[Stage], ports: &HashMap<&str, &Port>) -> st
         })
         .flatten()
         .collect();
-    let control = ["clk", "rst", "valid_in", "valid_out", "ready_out"];
     let mut owners: HashMap<String, Signal> = HashMap::new();
     for p in &m.ports {
         if p.dir == Dir::Input && !control.contains(&p.name.as_str()) {
@@ -255,6 +308,7 @@ fn item_word(kind: &ItemKind) -> &'static str {
         ItemKind::Fn { .. } => "a function",
         ItemKind::Fsm { .. } => "an fsm",
         ItemKind::Reset { .. } => "a reset directive",
+        ItemKind::Clock { .. } => "a clock directive",
         ItemKind::Val { .. } => "a val",
         ItemKind::Decl(_) => "a declaration",
         ItemKind::ContAssign { .. } => "an assignment",

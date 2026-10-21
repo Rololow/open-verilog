@@ -21,7 +21,7 @@ const ASSIGN_OPS: &[(&str, &str)] = &[("+=", "+"), ("-=", "-"), ("*=", "*"), ("/
 const UNSUPPORTED: &[&str] = &[
     "struct", "typedef", "import", "function", "override",
     "same_domain", "package", "interface", "trait", "bundle", "config", "export", "isa",
-    "probe", "test", "clock", "break", "continue",
+    "probe", "test", "break", "continue",
 ];
 /// Relational precedence; generic arguments `<...>` are parsed above it.
 const REL_PREC: u8 = 8;

@@ -1,0 +1,23 @@
+// One description of the instruction formats: decoding views here, and with --emit-isa-sv / --emit-isa-py /
+// --emit-doc an SV package of field positions, a Python encoder / decoder and the documentation.
+
+const N_BANKS = 4, BANK_ADDR_L = 4, DATA_MEM_ADDR_L = 10;
+
+isa Einsum "toy accelerator" : opcode 4 max 128 {
+  NOP = 1 "no operation" {}
+  LD = 5 "load" { en : N_BANKS "one enable per bank"; mem_addr : DATA_MEM_ADDR_L "data memory address"; }
+  LD_SC = 12 "load from the spill memory" like LD;
+  BB = 2 "compute" { pe_mode : 4; rd_addr : BANK_ADDR_L [N_BANKS] "read address per bank"; }
+}
+
+module Decoder(input logic [63:0] instr, input logic [1:0] bank, output logic [3:0] op, output logic [9:0] addr,
+               output logic [3:0] en, output logic [3:0] rd2, output logic [3:0] rdv, output logic [7:0] len) {
+  val ld = instr.as(Einsum.LD);
+  val bb = instr.as(Einsum.BB);
+  assign op = ld.opcode;
+  assign addr = ld.mem_addr;
+  assign en = ld.en;
+  assign rd2 = bb.rd_addr[2];
+  assign rdv = bb.rd_addr[bank];
+  assign len = Einsum.lengths[op];
+}

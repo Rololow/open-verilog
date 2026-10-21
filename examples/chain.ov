@@ -1,0 +1,13 @@
+// Parametric number of pipeline stages: `for` generates stages (step_0 ... step_{N-1}).
+// A pipeline-level array is scalarized (v_0 ... v_N); each element is owned by the stage that drives it.
+pipeline AddChain<int N = 4>(
+  input clk, input rst, input logic valid_in, input logic [7:0] d,
+  output logic [7:0] y, output logic valid_out
+) {
+  logic [7:0] v [N+1];
+  stage first { assign v[0] = d; }
+  for i in 0..N {
+    stage step { assign v[i+1] = (v[i] + 1).wrap(); }       // stage step_i, reads the previous stage's value
+  }
+  stage last { assign y = v[N]; }
+}

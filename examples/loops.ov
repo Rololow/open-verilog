@@ -1,0 +1,29 @@
+module Cell<int W = 8>(input clk, input logic [W-1:0] d, output logic [W-1:0] q) {
+  always_ff @(posedge clk) { q <= d; }
+}
+
+module Shift<int N = 4, int W = 8>(input clk, input logic [W-1:0] d, output logic [W-1:0] q) {
+  logic [W-1:0] stage [N+1];
+  assign stage[0] = d;
+  for i in 0..N {
+    Cell<W> c(.clk(clk), .d(stage[i]), .q(stage[i+1]));
+  }
+  assign q = stage[N];
+}
+
+module Parity<int W = 8>(input logic [W-1:0] x, output logic p) {
+  always_comb {
+    p = 0;
+    for i in 0..W { p = p ^ x[i]; }
+  }
+}
+
+module Sel(input logic [1:0] s, input logic [3:0] a, output logic y) {
+  always_comb {
+    case (s) {
+      0, 1: y = a[0];
+      2: y = a[1] & a[2] | a[3];
+      default: y = (a[0] + a[1]) * 2 == 0 ? 1 : 0;
+    }
+  }
+}

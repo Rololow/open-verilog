@@ -1,0 +1,5 @@
+module Counter<int W = 8>(input clk, input rst, output logic [W-1:0] q) {
+  always_ff @(posedge clk) {
+    if (rst) { q <= 0; } else { q <= q + 1; }
+  }
+}

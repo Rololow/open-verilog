@@ -1,0 +1,25 @@
+// Bit helpers as methods on hardware values, and Vec<T, N> (sugar for `T name [N]`).
+module Bits(
+  input  logic [7:0] a,
+  input  logic [3:0] b,
+  output logic [11:0] c,      // {a, b}    = {a, b}
+  output logic [7:0] r,       // a.reverse() = bit-reversed a
+  output logic [15:0] f,      // a.fill(2)   = {2{a}}
+  output logic [15:0] z,      // a.zext(16)  = zero-extended
+  output logic [15:0] s,      // a.sext(16)  = sign-extended
+  output logic m,             // a.msb()
+  output logic l              // a.lsb()
+) {
+  assign c = {a, b};
+  assign r = a.reverse();
+  assign f = a.fill(2);
+  assign z = a.zext(16);
+  assign s = a.sext(16);
+  assign m = a.msb();
+  assign l = a.lsb();
+}
+
+// `v.list()` turns an array signal into a compile-time list: v[0], v[1], ...
+module VecSum<int N = 4, int W = 8>(input Vec<logic [W-1:0], N> in, output logic [W+clog2(N)-1:0] sum) {
+  assign sum = in.list().tree_reduce(+);
+}

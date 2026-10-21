@@ -1,0 +1,11 @@
+// Widths versus counts. One rule:
+//   * dimensions BEFORE the name are bit widths:   logic [7:0] a,  logic [8] a,  logic<8> a
+//   * dimensions AFTER the name (or Vec<T, N>) are array sizes:   logic [7:0] a [3],  Vec<logic<8>, 3> a
+module Widths(
+  input  logic<8> a,                   // 8 bits, same as logic [7:0]
+  input  logic [8] b,                  // 8 bits (shorthand: [N] before the name means N bits)
+  input  Vec<logic<8>, 3> arr,         // 3 elements of 8 bits, same as logic [7:0] arr [3]
+  output logic<11> sum
+) {
+  assign sum = a + b + arr[0] + arr[1] + arr[2];
+}

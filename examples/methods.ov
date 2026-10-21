@@ -1,0 +1,34 @@
+// Methods with arguments, and methods on structs.
+
+// A small register file: `read(i)` is a combinational method with an argument.
+// Each call site gets its own ports (ov_read_<k>_i / ov_read_<k>), so several reads can happen in parallel.
+module RegFile(input clk, input rst, input logic we, input logic [1:0] wa, input logic [7:0] wd) {
+  logic [7:0] mem [4];
+  always_ff @(posedge clk) {
+    if (we) { mem[wa] <= wd; }
+  }
+  fn read(logic [1:0] i) -> logic [7:0] { return mem[i]; }
+}
+
+module Dual(input clk, input rst, input logic we, input logic [1:0] wa, input logic [7:0] wd,
+            input logic [1:0] ra, input logic [1:0] rb, output logic [7:0] a, output logic [7:0] b,
+            output logic [7:0] last) {
+  RegFile rf(.clk, .rst, .we, .wa, .wd);
+  assign a = rf.read(ra);
+  assign b = rf.read(rb);
+  assign last = rf.read(2'd3);
+}
+
+// Struct methods: field names are usable inside the struct's fn.
+struct Pixel {
+  logic [7:0] r;
+  logic [7:0] g;
+  logic [7:0] b;
+  fn sum() -> logic [9:0] { return r + g + b; }
+  fn brighter(logic [7:0] k) -> logic { return sum() > k; }
+}
+
+module Luma(input Pixel p, input logic [7:0] k, output logic [9:0] s, output logic bright) {
+  assign s = p.sum();
+  assign bright = p.brighter(k);
+}

@@ -1,0 +1,37 @@
+// Tests written next to the design: `python -m ovc testbench.ov --emit-tests tests.sv` writes a testbench
+// (top module ovc_tests) that any SystemVerilog simulator runs; it prints one PASS / FAIL line per test.
+
+module Counter<int W = 8>(input clk, input rst, input en, output logic [W-1:0] q) {
+  always_ff @(posedge clk) { if (rst) { q <= 0; } else if (en) { q <= (q + 1).wrap(); } }
+}
+
+module Add(input logic [7:0] a, input logic [7:0] b, output logic [8:0] s) { assign s = a + b; }
+
+test "counts and wraps" for Counter<8> {
+  en = 1;
+  step(3);
+  expect(q == 3);
+  step(253);
+  expect(q == 0, "wraps after 256");
+}
+
+test "holds when disabled" for Counter<4> timeout 50 {
+  en = 1;
+  step(2);
+  en = 0;
+  step(5);
+  expect(q == 2);
+  en = 1;
+  wait_until(q == 9, 10);
+}
+
+test "adds with carry" for Add {
+  for i in 0..3 {
+    a = 80 * i;
+    b = 7;
+    expect(s == 80 * i + 7);
+  }
+  a = 255;
+  b = 255;
+  expect(s == 510);
+}

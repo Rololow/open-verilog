@@ -1,0 +1,30 @@
+// Classic SV and .ov mixed in the same file
+module Reg8 #(parameter int W = 8) (
+  input  logic clk,
+  input  logic [W-1:0] d,
+  output logic [W-1:0] q
+);
+  always_ff @(posedge clk) begin
+    q <= d;
+  end
+endmodule
+
+module Bank #(parameter int N = 4, parameter int W = 8) (
+  input  logic clk,
+  input  logic [W-1:0] d [N],
+  output logic [W-1:0] q [N]
+);
+  genvar i;
+  generate
+    for (genvar i = 0; i < N; i++) begin : g
+      Reg8 #(.W(W)) r (.clk, .d(d[i]), .q(q[i]));
+    end
+  endgenerate
+endmodule
+
+module Acc<int W = 8>(input clk, input rst, input logic [W-1:0] x, output logic [W-1:0] s) {
+  always @(posedge clk or negedge rst) begin
+    if (!rst) s <= 0;
+    else s += x;
+  end
+}

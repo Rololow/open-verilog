@@ -132,7 +132,7 @@ impl Emitter {
                 self.line("endtask");
                 Ok(())
             }
-            ItemKind::GenFor { .. } | ItemKind::TieOff(_) | ItemKind::Stage { .. } | ItemKind::Ctrl { .. } | ItemKind::Fn { .. } | ItemKind::Proc { .. } | ItemKind::MemMap { .. } | ItemKind::Fsm { .. } | ItemKind::Reset { .. } | ItemKind::Val { .. } => {
+            ItemKind::GenFor { .. } | ItemKind::TieOff(_) | ItemKind::Stage { .. } | ItemKind::Ctrl { .. } | ItemKind::Fn { .. } | ItemKind::Proc { .. } | ItemKind::MemMap { .. } | ItemKind::Fsm { .. } | ItemKind::Reset { .. } | ItemKind::Clock { .. } | ItemKind::Val { .. } => {
                 Err(Error::new("this item is not supported in SystemVerilog output yet", "", 0, 0))
             }
         }

@@ -141,6 +141,12 @@ impl Parser {
                 }
                 Ok(vec![ItemKind::Reset { name, low, is_async }])
             }
+            "clock" if self.peek(1).kind == Kind::Ident => {
+                self.i += 1;
+                let name = self.ident()?;
+                self.expect(";")?;
+                Ok(vec![ItemKind::Clock { name }])
+            }
             "fsm" if self.peek(1).kind == Kind::Ident => {
                 self.i += 1;
                 let enum_name = self.ident()?;

@@ -1,0 +1,31 @@
+// Bundles: a group of signals with directions, plus methods. Declared from the master's point of view;
+// `master` keeps the directions, `slave` flips them. Ports are flattened (out_valid, out_ready, ...).
+bundle Stream<type T> {
+  output logic valid;
+  input  logic ready;
+  output T data;
+  fn fire() -> logic { return valid & ready; }       // a transfer happens this cycle
+}
+
+module Source(input clk, input rst, master Stream<logic [7:0]> out) {
+  reg [7:0] n = 0;
+  always_ff {
+    if (out.fire()) { n <= n + 1; }
+  }
+  assign out.valid = 1;
+  assign out.data = n;
+}
+
+module Sink(input clk, input rst, input go, slave Stream<logic [7:0]> in,
+            output logic got, output logic [7:0] got_data) {
+  assign in.ready = go;
+  assign got = in.fire();
+  assign got_data = in.data;
+}
+
+// A local bundle signal connects a master port to a slave port in one go.
+module Top(input clk, input rst, input go, output logic got, output logic [7:0] got_data) {
+  Stream<logic [7:0]> link;
+  Source src(.clk, .rst, .out(link));
+  Sink snk(.clk, .rst, .go, .in(link), .got, .got_data);
+}

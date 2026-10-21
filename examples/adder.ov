@@ -1,0 +1,7 @@
+// Sum of N inputs of W bits: the adder tree is generated at elaboration time.
+module Adder<int N = 4, int W = 8>(
+  input  logic [W-1:0] in [N],
+  output logic [W+clog2(N)-1:0] sum
+) {
+  assign sum = (0..N).map(i => in[i]).tree_reduce(+);
+}

@@ -763,7 +763,8 @@ impl<'a> Design<'a> {
             pos: m.pos,
         };
         if m.kind == "pipeline" {
-            let lowered = pipeline::lower(&module, self.file, self.asserts)?;
+            let directives = pipeline::directives(m, self.file)?;
+            let lowered = pipeline::lower(&module, self.file, self.asserts, &directives)?;
             self.pipelines.push(lowered.table);
             self.warnings.extend(lowered.warnings);
             return Ok(lowered.module);
@@ -861,7 +862,8 @@ impl<'a> Design<'a> {
                     };
                     out.push(at(ItemKind::Always { sens, body, keyword: keyword.clone() }));
                 }
-                ItemKind::Reset { .. } => {}
+                // the reset and clock directives are read from the source module (see elab_module_body)
+                ItemKind::Reset { .. } | ItemKind::Clock { .. } => {}
                 ItemKind::Val { name, expr } => {
                     // a view of an instruction: `instr.as(Isa.FORMAT)` names the fields of `instr`
                     if let Expr::Call(f, args) = expr {
