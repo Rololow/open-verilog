@@ -1,7 +1,7 @@
 //! Testbenches from `test` blocks: one module per test, a top module that reports each test.
 
 fn example() -> String {
-    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     std::fs::read_to_string(root.join("examples").join("testbench.ov")).unwrap()
 }
 
