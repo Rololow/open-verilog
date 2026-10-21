@@ -18,30 +18,37 @@ jobs:
       matrix:
         include:
           - os: windows-latest
+            target: x86_64-pc-windows-msvc
             suffix: windows-x64.exe
             ext: .exe
           - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
             suffix: linux-x64
             ext: ""
           - os: macos-14
+            target: aarch64-apple-darwin
             suffix: macos-arm64
             ext: ""
-          - os: macos-13
+          # Intel binaries are cross-compiled on the Apple Silicon runner: the macos-13 runners queue for a very long time.
+          - os: macos-14
+            target: x86_64-apple-darwin
             suffix: macos-x64
             ext: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - name: test
         run: cargo test --release
       - name: build
-        run: cargo build --release --bins
+        run: cargo build --release --bins --target ${{ matrix.target }}
       - name: name the binaries
         shell: bash
         run: |
-          cp "target/release/ovc${{ matrix.ext }}" "ovc-${{ matrix.suffix }}"
-          cp "target/release/ovc-lsp${{ matrix.ext }}" "ovc-lsp-${{ matrix.suffix }}"
+          cp "target/${{ matrix.target }}/release/ovc${{ matrix.ext }}" "ovc-${{ matrix.suffix }}"
+          cp "target/${{ matrix.target }}/release/ovc-lsp${{ matrix.ext }}" "ovc-lsp-${{ matrix.suffix }}"
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.suffix }}
