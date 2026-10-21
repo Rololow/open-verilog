@@ -1,0 +1,3 @@
+# Sources and expected outputs are stored and checked out with LF line endings on every platform:
+# the golden tests compare the compiler's output (LF) with these files byte for byte.
+* text=auto eol=lf
