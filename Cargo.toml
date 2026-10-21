@@ -1,0 +1,26 @@
+[package]
+license = "MIT"
+name = "ovc"
+version = "0.1.0"
+edition = "2021"
+description = "Compiler for Open Verilog (.ov), a SystemVerilog extension, to plain SystemVerilog"
+keywords = ["hdl", "systemverilog", "compiler", "rtl"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+tokio = { version = "1.54.0", features = ["rt-multi-thread", "macros", "io-std", "time"] }
+tower-lsp = "0.20"
+
+[[bin]]
+name = "ovc"
+path = "src/main.rs"
+
+[[bin]]
+name = "ovc-lsp"
+path = "src/bin/ovc-lsp.rs"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

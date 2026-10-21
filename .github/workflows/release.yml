@@ -1,0 +1,104 @@
+# Release of the ovc compiler and its language server: on a tag v* (git tag v0.1.0 && git push origin v0.1.0), or by
+# hand from the Actions tab. Builds ovc and ovc-lsp for Windows, Linux and macOS, builds the Windows installer, and
+# publishes everything with a SHA256SUMS file: the VS Code extension checks the binaries it downloads against it.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            suffix: windows-x64.exe
+            ext: .exe
+          - os: ubuntu-latest
+            suffix: linux-x64
+            ext: ""
+          - os: macos-14
+            suffix: macos-arm64
+            ext: ""
+          - os: macos-13
+            suffix: macos-x64
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: test
+        run: cargo test --release
+      - name: build
+        run: cargo build --release --bins
+      - name: name the binaries
+        shell: bash
+        run: |
+          cp "target/release/ovc${{ matrix.ext }}" "ovc-${{ matrix.suffix }}"
+          cp "target/release/ovc-lsp${{ matrix.ext }}" "ovc-lsp-${{ matrix.suffix }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.suffix }}
+          path: |
+            ovc-${{ matrix.suffix }}
+            ovc-lsp-${{ matrix.suffix }}
+
+  installer:
+    needs: [binaries]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries-windows-x64.exe
+          path: dist
+      - name: the version of the tag
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: rename the Windows binaries for the installer
+        shell: bash
+        run: |
+          cp "dist/ovc-windows-x64.exe" installer/ovc.exe
+          cp "dist/ovc-lsp-windows-x64.exe" installer/ovc-lsp.exe
+      - name: build the installer
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" installer\ovc.iss
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ovc-setup
+          path: installer/out/ovc-setup-*.exe
+
+  publish:
+    needs: [binaries, installer]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          pattern: binaries-*
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: ovc-setup
+          path: assets
+      - name: checksums
+        working-directory: assets
+        run: sha256sum ovc-* ovc-lsp-* ovc-setup-*.exe > SHA256SUMS && cat SHA256SUMS
+      - name: github release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            assets/ovc-*
+            assets/ovc-lsp-*
+            assets/ovc-setup-*.exe
+            assets/SHA256SUMS
+          generate_release_notes: true

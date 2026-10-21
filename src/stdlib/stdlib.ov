@@ -1,0 +1,224 @@
+// Open Verilog standard library: available in every file without an import, emitted only when used; a
+// definition with the same name in the user's code takes precedence.
+
+// Handshake stream: a transfer happens in a cycle where valid and ready are both high. Checked by ovc for every
+// bundle with `valid` and `ready` fields: the producer's valid must not depend combinationally on ready (compile
+// error), and once valid is high it stays high with stable data until the transfer (generated assertions).
+bundle Stream<type T> {
+  output logic valid = 0;                  // idle: nothing offered, everything accepted
+  input logic ready = 1;
+  output T data;
+  fn fire() -> logic { return valid & ready; }
+}
+
+// First-in first-out buffer of DEPTH entries (DEPTH >= 2): in.ready = not full, out.valid = not empty.
+module Fifo<type T = logic [7:0], int DEPTH = 4>(input clk, input rst, slave Stream<T> in, master Stream<T> out,
+                                                 output logic [clog2(DEPTH + 1) - 1:0] count) {
+  val A = clog2(DEPTH);
+  T mem [DEPTH];
+  reg [A - 1:0] rd, wr;
+  reg [clog2(DEPTH + 1) - 1:0] n;
+  assign count = n;
+  assign in.ready = n != DEPTH;
+  assign out.valid = n != 0;
+  assign out.data = mem[rd];
+  always_ff {
+    if (in.fire()) { mem[wr] <= in.data; wr <= wr == DEPTH - 1 ? 0 : (wr + 1).wrap(); }
+    if (out.fire()) { rd <= rd == DEPTH - 1 ? 0 : (rd + 1).wrap(); }
+    n <= (n + in.fire() - out.fire()).wrap();
+  }
+}
+
+// Register slice (skid buffer): registers both directions (valid / data and ready) at full throughput.
+module Slice<type T = logic [7:0]>(input clk, input rst, slave Stream<T> in, master Stream<T> out) {
+  reg full, skid_full;
+  T main, skid;
+  assign in.ready = !skid_full;
+  assign out.valid = full;
+  assign out.data = main;
+  always_ff {
+    if (out.ready || !full) {             // the output register takes a new value
+      if (skid_full) { main <= skid; full <= 1; skid_full <= 0; }
+      else { main <= in.data; full <= in.valid; }
+    } else if (in.fire()) {               // output stalled: keep the incoming value aside
+      skid <= in.data;
+      skid_full <= 1;
+    }
+  }
+}
+
+// Round-robin arbiter: N streams into one; `source` tells which input is being forwarded. Once a value is
+// offered on `out` the choice is kept until it is taken, so the output stays stable.
+module Arbiter<type T = logic [7:0], int N = 2>(input clk, input rst, slave Vec<Stream<T>, N> in, master Stream<T> out,
+                                                output logic [clog2(N) - 1:0] source) {
+  val W = clog2(N);
+  reg [W - 1:0] last, held;              // last input served; choice kept while out is stalled
+  reg locked;
+  logic [W - 1:0] pick;
+  logic any;
+  always_comb {                          // first valid input after `last`, in round-robin order
+    pick = last;
+    any = 0;
+    for k in (1..N + 1).reverse() {
+      val i = (last + k >= N ? last + k - N : last + k).wrap();
+      if (in.valid[i]) { pick = i; any = 1; }
+    }
+  }
+  wire [W - 1:0] sel = locked ? held : pick;
+  assign source = sel;
+  assign out.valid = locked || any;
+  assign out.data = in.data[sel];
+  for i in 0..N { assign in[i].ready = out.ready && (locked || any) && sel == i; }
+  always_ff {
+    locked <= out.valid && !out.ready;
+    held <= sel;
+    if (out.fire()) { last <= sel; }
+  }
+}
+
+// AXI4 (AMBA AXI4, without lock / cache / prot / qos / region / user: tie them at the boundary of vendor IP).
+// Five valid/ready channels, each checked like a Stream. Bursts: len + 1 beats of 2^size bytes; burst 0 FIXED,
+// 1 INCR, 2 WRAP. Responses: 0 OKAY, 1 EXOKAY, 2 SLVERR, 3 DECERR.
+struct AxiAddr<int AW = 32, int IW = 4> {
+  logic [IW-1:0] id;
+  logic [AW-1:0] addr;
+  logic [7:0] len;
+  logic [2:0] size;
+  logic [1:0] burst;
+}
+struct AxiW<int DW = 32> { logic [DW-1:0] data; logic [DW/8-1:0] strb; logic last; }
+struct AxiB<int IW = 4> { logic [IW-1:0] id; logic [1:0] resp; }
+struct AxiR<int DW = 32, int IW = 4> { logic [IW-1:0] id; logic [DW-1:0] data; logic [1:0] resp; logic last; }
+bundle Axi<int AW = 32, int DW = 32, int IW = 4> {
+  monitor AxiMonitor<AW, DW, IW>;          // on every slave port: burst rules, WLAST / RLAST, responses
+  output Stream<AxiAddr<AW, IW>> aw;
+  output Stream<AxiW<DW>> w;
+  input Stream<AxiB<IW>> b;
+  output Stream<AxiAddr<AW, IW>> ar;
+  input Stream<AxiR<DW, IW>> r;
+}
+
+// AXI4-Lite: single beats, no id. prot is kept (Linux drivers do not care, some IP does).
+struct AxiLiteAddr<int AW = 32> { logic [AW-1:0] addr; logic [2:0] prot; }
+struct AxiLiteW<int DW = 32> { logic [DW-1:0] data; logic [DW/8-1:0] strb; }
+struct AxiLiteR<int DW = 32> { logic [DW-1:0] data; logic [1:0] resp; }
+bundle AxiLite<int AW = 32, int DW = 32> {
+  monitor AxiLiteMonitor<AW, DW>;
+  output Stream<AxiLiteAddr<AW>> aw;
+  output Stream<AxiLiteW<DW>> w;
+  input Stream<logic [1:0]> b;
+  output Stream<AxiLiteAddr<AW>> ar;
+  input Stream<AxiLiteR<DW>> r;
+}
+
+// ---- Protocol monitors: ovc instantiates a bundle's `monitor` on every slave port of that bundle (simulation
+// only, like the valid/ready checks; --no-asserts removes them). They report what valid/ready alone cannot see.
+
+// AXI4: burst rules (WRAP lengths and alignment, INCR within 4 KiB, size within the bus, no reserved burst),
+// WLAST on the beat AWLEN announces (W may come before AW), no B before its write is complete, no R without a
+// read, RLAST on the beat ARLEN announces (checked while the responses come back in order).
+module AxiMonitor<int AW = 32, int DW = 32, int IW = 4, int DEPTH = 8>(input clk, input rst, monitor Axi<AW, DW, IW> b) {
+  val D = clog2(DEPTH);
+  val MAXSIZE = clog2(DW / 8);
+  logic [8:0] awq [DEPTH], wq [DEPTH];       // burst lengths: announced by AW, seen on W
+  logic [IW + 8:0] arq [DEPTH];              // {id, length} of the reads
+  logic [D:0] aw_in, aw_out, w_in, w_out, ar_in, ar_out;
+  logic [31:0] aws, wlasts, bs, ars, rlasts;
+  logic [8:0] wbeats, rbeats;
+  logic lost;                                // more than DEPTH bursts outstanding: lengths are not checked
+  wire [12:0] aw_end = (b.aw.data.addr[11:0].zext(13) + ((b.aw.data.len.zext(13) + 1) << b.aw.data.size)).wrap();
+  wire [12:0] ar_end = (b.ar.data.addr[11:0].zext(13) + ((b.ar.data.len.zext(13) + 1) << b.ar.data.size)).wrap();
+  wire [AW-1:0] aw_mask = ((AW'(1) << b.aw.data.size) - 1).wrap();
+  wire [AW-1:0] ar_mask = ((AW'(1) << b.ar.data.size) - 1).wrap();
+  fn wrap_ok(len) { return len == 1 || len == 3 || len == 7 || len == 15; }
+  wire [IW + 8:0] ar_head = arq[ar_out[D-1:0]];
+
+  always_ff @(posedge clk) {
+    if (rst) {
+      aw_in <= 0; aw_out <= 0; w_in <= 0; w_out <= 0; ar_in <= 0; ar_out <= 0;
+      aws <= 0; wlasts <= 0; bs <= 0; ars <= 0; rlasts <= 0; wbeats <= 0; rbeats <= 0; lost <= 0;
+    } else {
+      // the address phases
+      if (b.aw.fire()) {
+        if (b.aw.data.burst == 3) { $error("AXI %m: AW burst 3 is reserved"); }
+        if (b.aw.data.size > MAXSIZE) { $error("AXI %m: AW size %0d is wider than the %0d-bit bus", b.aw.data.size, DW); }
+        if (b.aw.data.burst == 2 && (!wrap_ok(b.aw.data.len) || (b.aw.data.addr & aw_mask) != 0)) {
+          $error("AXI %m: AW WRAP burst with length %0d or an unaligned address %h", b.aw.data.len + 1, b.aw.data.addr);
+        }
+        if (b.aw.data.burst == 1 && aw_end > 4096) { $error("AXI %m: AW burst at %h crosses a 4 KiB boundary", b.aw.data.addr); }
+        if ((aw_in - aw_out).wrap() == DEPTH) { lost <= 1; }
+        else { awq[aw_in[D-1:0]] <= (b.aw.data.len + 1).wrap(); aw_in <= (aw_in + 1).wrap(); }
+        aws <= (aws + 1).wrap();
+      }
+      if (b.ar.fire()) {
+        if (b.ar.data.burst == 3) { $error("AXI %m: AR burst 3 is reserved"); }
+        if (b.ar.data.size > MAXSIZE) { $error("AXI %m: AR size %0d is wider than the %0d-bit bus", b.ar.data.size, DW); }
+        if (b.ar.data.burst == 2 && (!wrap_ok(b.ar.data.len) || (b.ar.data.addr & ar_mask) != 0)) {
+          $error("AXI %m: AR WRAP burst with length %0d or an unaligned address %h", b.ar.data.len + 1, b.ar.data.addr);
+        }
+        if (b.ar.data.burst == 1 && ar_end > 4096) { $error("AXI %m: AR burst at %h crosses a 4 KiB boundary", b.ar.data.addr); }
+        if ((ar_in - ar_out).wrap() == DEPTH) { lost <= 1; }
+        else { arq[ar_in[D-1:0]] <= {b.ar.data.id, (b.ar.data.len + 1).wrap()}; ar_in <= (ar_in + 1).wrap(); }
+        ars <= (ars + 1).wrap();
+      }
+      // write data: the length of each burst, compared with what its AW announced
+      if (b.w.fire()) {
+        wbeats <= b.w.data.last ? 0 : (wbeats + 1).wrap();
+        if (b.w.data.last) {
+          wq[w_in[D-1:0]] <= (wbeats + 1).wrap();
+          w_in <= (w_in + 1).wrap();
+          wlasts <= (wlasts + 1).wrap();
+        }
+      }
+      if (aw_in != aw_out && w_in != w_out) {
+        if (!lost && awq[aw_out[D-1:0]] != wq[w_out[D-1:0]]) {
+          $error("AXI %m: W burst of %0d beats (WLAST) but AWLEN announced %0d", wq[w_out[D-1:0]], awq[aw_out[D-1:0]]);
+        }
+        aw_out <= (aw_out + 1).wrap();
+        w_out <= (w_out + 1).wrap();
+      }
+      // responses
+      if (b.b.fire()) {
+        if (bs >= aws || bs >= wlasts) { $error("AXI %m: B response without a complete write (address and data)"); }
+        bs <= (bs + 1).wrap();
+      }
+      if (b.r.fire()) {
+        if (rlasts >= ars) { $error("AXI %m: R beat without an outstanding read"); }
+        else if (!lost && ar_head[IW + 8:9] == b.r.data.id) {
+          if (b.r.data.last && (rbeats + 1).wrap() != ar_head[8:0]) {
+            $error("AXI %m: RLAST on beat %0d but ARLEN announced %0d", rbeats + 1, ar_head[8:0]);
+          }
+          if (!b.r.data.last && (rbeats + 1).wrap() == ar_head[8:0]) {
+            $error("AXI %m: beat %0d of %0d without RLAST", rbeats + 1, ar_head[8:0]);
+          }
+        } else if (!lost) { lost <= 1; }         // responses reordered across ids: lengths are not followed
+        rbeats <= b.r.data.last ? 0 : (rbeats + 1).wrap();
+        if (b.r.data.last) {
+          rlasts <= (rlasts + 1).wrap();
+          if (ar_in != ar_out) { ar_out <= (ar_out + 1).wrap(); }
+        }
+      }
+    }
+  }
+}
+
+// AXI4-Lite: no response without its request (B after both the address and the data of a write).
+module AxiLiteMonitor<int AW = 32, int DW = 32>(input clk, input rst, monitor AxiLite<AW, DW> b) {
+  logic [31:0] aws, ws, bs, ars, rs;
+  always_ff @(posedge clk) {
+    if (rst) { aws <= 0; ws <= 0; bs <= 0; ars <= 0; rs <= 0; }
+    else {
+      if (b.aw.fire()) { aws <= (aws + 1).wrap(); }
+      if (b.w.fire()) { ws <= (ws + 1).wrap(); }
+      if (b.ar.fire()) { ars <= (ars + 1).wrap(); }
+      if (b.b.fire()) {
+        if (bs >= aws || bs >= ws) { $error("AXI-Lite %m: B response without a complete write (address and data)"); }
+        bs <= (bs + 1).wrap();
+      }
+      if (b.r.fire()) {
+        if (rs >= ars) { $error("AXI-Lite %m: R response without a read"); }
+        rs <= (rs + 1).wrap();
+      }
+    }
+  }
+}
