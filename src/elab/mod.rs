@@ -448,6 +448,20 @@ struct Design<'a> {
     asserts: bool,
 }
 
+/// The struct a view names: `x.as(S)` or `x.as(S<args>)`.
+fn view_struct_key(expr: &Expr, env: &Env) -> Option<String> {
+    let Expr::Call(f, args) = expr else { return None };
+    let (Expr::Member(_, method, _), [arg]) = (&**f, args.as_slice()) else { return None };
+    if method != "as" {
+        return None;
+    }
+    match arg {
+        Expr::Ident(n, _) if env.struct_info(n).is_some() => Some(n.clone()),
+        Expr::Type(dt) => fold::struct_key(dt, env),
+        _ => None,
+    }
+}
+
 impl<'a> Design<'a> {
     /// The monitors of a bundle port: an instance of each, on the clock and reset and the port.
     fn monitor_items(&self, def: &crate::ast::BundleDef, p: &Port, env: &Env, ctx: &Ctx) -> Result<Vec<Item>> {
@@ -652,17 +666,9 @@ impl<'a> Design<'a> {
         fn struct_views(items: &[Item], env: &Env, out: &mut HashMap<String, String>) {
             for it in items {
                 match &it.kind {
-                    ItemKind::Val { name, expr: Expr::Call(f, args) } => {
-                        if let (Expr::Member(_, method, _), [arg]) = (&**f, args.as_slice()) {
-                            // the struct named by the view: a plain name, or a parameterized type
-                            let key = match arg {
-                                Expr::Ident(n, _) if env.struct_info(n).is_some() => Some(n.clone()),
-                                Expr::Type(dt) => fold::struct_key(dt, env),
-                                _ => None,
-                            };
-                            if let (true, Some(key)) = (method == "as", key) {
-                                out.insert(name.clone(), key);
-                            }
+                    ItemKind::Val { name, expr } => {
+                        if let Some(key) = view_struct_key(expr, env) {
+                            out.insert(name.clone(), key);
                         }
                     }
                     ItemKind::Stage { items, .. } => struct_views(items, env, out),
@@ -880,6 +886,10 @@ impl<'a> Design<'a> {
                     // a name for a signal is an alias of it (no signal of its own), as the reference makes it
                     // (a struct view, `x.as(S)`, keeps its signal: the view's type is on that signal)
                     let is_view = matches!(expr, Expr::Call(f, _) if matches!(&**f, Expr::Member(_, m, _) if m == "as"));
+                    // a view inside a generate loop has the name of its iteration (`rel_v_0`): its fields are read from it
+                    if let (true, Some(key)) = (is_view, view_struct_key(expr, env)) {
+                        env.add_struct_of(name, key);
+                    }
                     if let (Expr::Ident(..), false) = (&value, is_view) {
                         env.define_expr(name, value);
                         continue;

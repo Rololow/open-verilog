@@ -46,7 +46,7 @@ pub struct Env {
     delay_count: Rc<Cell<usize>>,
     structs: Rc<HashMap<String, StructInfo>>,
     /// Signal name -> the struct type it was declared with (only for struct-typed signals).
-    struct_of: Rc<HashMap<String, String>>,
+    struct_of: Rc<RefCell<HashMap<String, String>>>,
     /// Parameterized structs, by name, and the instances built so far (keyed by name and arguments).
     struct_defs: Rc<HashMap<String, crate::ast::StructDef>>,
     struct_instances: Rc<RefCell<HashMap<String, StructInfo>>>,
@@ -378,12 +378,18 @@ impl Env {
     }
 
     pub fn set_struct_of(&mut self, struct_of: HashMap<String, String>) {
-        self.struct_of = Rc::new(struct_of);
+        self.struct_of = Rc::new(RefCell::new(struct_of));
+    }
+
+    /// A signal made at elaboration (a `val` view inside a generate loop, under its final name) read as a struct.
+    pub fn add_struct_of(&self, signal: &str, key: String) {
+        self.struct_of.borrow_mut().insert(signal.to_string(), key);
     }
 
     /// The struct a signal was declared with, if any.
     pub fn struct_of(&self, signal: &str) -> Option<StructInfo> {
-        self.struct_of.get(signal).and_then(|s| self.struct_info(s))
+        let key = self.struct_of.borrow().get(signal).cloned()?;
+        self.struct_info(&key)
     }
 
     /// The storage type of an enum member named as `Enum_MEMBER` (the name it has once folded), when it is one.
