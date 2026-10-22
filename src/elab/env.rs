@@ -37,7 +37,7 @@ pub struct Env {
     fns: Rc<HashMap<String, FnDef>>,
     signals: Rc<RefCell<SignalTable>>,
     reset: Option<ResetSpec>,
-    reg_inits: Rc<Vec<(String, crate::ast::Expr)>>,
+    reg_inits: Rc<RefCell<Vec<(String, crate::ast::Expr)>>>,
     /// The registers and the blocks of `.delay()` lines, placed by the module, and the number of lines so far.
     delay_decls: Rc<RefCell<Vec<crate::ast::Item>>>,
     /// The constant tables declared in the module.
@@ -227,7 +227,7 @@ impl Env {
 
     pub fn set_reset(&mut self, reset: Option<ResetSpec>, reg_inits: Vec<(String, crate::ast::Expr)>) {
         self.reset = reset;
-        self.reg_inits = Rc::new(reg_inits);
+        self.reg_inits = Rc::new(RefCell::new(reg_inits));
     }
 
     pub fn reset(&self) -> Option<&ResetSpec> {
@@ -235,8 +235,16 @@ impl Env {
     }
 
     /// The registers with an initial value: their reset value in the implicit `always_ff`.
-    pub fn reg_inits(&self) -> &[(String, crate::ast::Expr)] {
-        &self.reg_inits
+    pub fn reg_inits(&self) -> Vec<(String, crate::ast::Expr)> {
+        self.reg_inits.borrow().clone()
+    }
+
+    /// A register declared inside a generate block (under its final name): reset like the module's own.
+    pub fn add_reg_init(&self, name: &str, init: crate::ast::Expr) {
+        let mut inits = self.reg_inits.borrow_mut();
+        if !inits.iter().any(|(n, _)| n == name) {
+            inits.push((name.to_string(), init));
+        }
     }
 
     pub fn set_structs(&mut self, structs: HashMap<String, StructInfo>) {

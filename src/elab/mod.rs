@@ -641,7 +641,7 @@ impl<'a> Design<'a> {
                         dims.extend(x.dims.iter().map(|e| fold_expr(e, &env)));
                         signals.insert(x.name.clone(), (dtype.clone(), dims));
                         // a register is reset to its initial value, or to 0 (see implicit_clocking)
-                        if d.dtype.name == "reg" && x.dims.is_empty() {
+                        if d.dtype.name == "reg" {
                             let init = match &x.init {
                                 Some(e) => fold_expr(e, &env),
                                 None => Expr::Num("0".into()),
@@ -827,6 +827,12 @@ impl<'a> Design<'a> {
                     // the signals of a stage or a block are known from here on (widths of the later statements)
                     for x in &decl.decls {
                         env.define_signal(&x.name, decl.dtype.clone(), x.dims.clone());
+                    }
+                    // a register of a generate block is reset too (the module's own were collected up front)
+                    if d.dtype.name == "reg" {
+                        for x in &d.decls {
+                            env.add_reg_init(&x.name, x.init.as_ref().map_or_else(|| Expr::Num("0".into()), |e| fold_expr(e, env)));
+                        }
                     }
                     // `wire T x = e;` is a declaration plus a continuous assignment at this place
                     if decl.dtype.name == "wire" && decl.decls.iter().any(|x| x.init.is_some()) {
@@ -1582,9 +1588,17 @@ fn implicit_clocking(env: &Env, body: Stmt, pos: Pos) -> (Sens, Stmt) {
     assigned_names(&body, &mut written);
     let resets: Vec<Stmt> = env
         .reg_inits()
-        .iter()
+        .into_iter()
         .filter(|(name, _)| written.contains(name))
-        .map(|(name, init)| Stmt::Assign { lhs: Expr::Ident(name.clone(), pos), rhs: init.clone(), nonblocking: true })
+        .flat_map(|(name, init)| {
+            // an array is reset element by element
+            let dims: Option<Vec<i64>> = env.signal(&name).and_then(|(_, dims)| dims.iter().map(int_of).collect());
+            let mut targets = vec![Expr::Ident(name.clone(), pos)];
+            for n in dims.unwrap_or_default() {
+                targets = targets.into_iter().flat_map(|t| (0..n).map(move |i| Expr::Index(Box::new(t.clone()), Box::new(Expr::Num(i.to_string()))))).collect();
+            }
+            targets.into_iter().map(|lhs| Stmt::Assign { lhs, rhs: init.clone(), nonblocking: true }).collect::<Vec<_>>()
+        })
         .collect();
     let body = if resets.is_empty() {
         body

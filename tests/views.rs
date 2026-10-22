@@ -42,3 +42,19 @@ fn a_view_outside_a_loop_reads_its_fields_as_slices() {
     let sv = compile(&src);
     assert!(sv.contains("assign lo = v[10:0];"), "{sv}");
 }
+
+#[test]
+fn registers_of_a_generate_block_and_register_arrays_are_reset() {
+    let src = "module M<int W = 8>(input clk, input rst, input logic [7:0] d, output logic [7:0] y) {
+  reg [7:0] hold [2];
+  if (W >= 8) {
+    reg [7:0] acc;
+    assign y = acc;
+    always_ff { acc <= d; hold[0] <= d; hold[1] <= acc; }
+  }
+}
+";
+    let sv = compile(src);
+    assert!(sv.contains("acc <= 0;"), "{sv}");
+    assert!(sv.contains("hold[0] <= 0;") && sv.contains("hold[1] <= 0;"), "{sv}");
+}
