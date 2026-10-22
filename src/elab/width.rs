@@ -155,10 +155,15 @@ pub fn width_of(e: &Expr, env: &Env) -> Option<Width> {
             }
         }
         Expr::Index(base, _) => {
-            // an element of an array, or a bit of a packed vector
-            let Expr::Ident(name, _) = &**base else { return None };
+            // an element of an array, or a bit of a packed vector; `a[i][j]` indexes the dimensions in turn, then the bits
+            let (mut depth, mut root) = (1, &**base);
+            while let Expr::Index(inner, _) = root {
+                depth += 1;
+                root = inner;
+            }
+            let Expr::Ident(name, _) = root else { return None };
             let (dtype, dims) = env.signal(name)?;
-            if dims.is_empty() {
+            if dims.is_empty() || depth > dims.len() {
                 Some(full(1))
             } else {
                 Some(full(signal_bits(&dtype, env)?))

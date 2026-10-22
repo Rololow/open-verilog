@@ -334,6 +334,12 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                 if let Some(v) = env.config_field(signal, name) {
                     return v;
                 }
+                // a section or entry of the manifest of a config parameter: `C.tables` (a record, read by its keys)
+                if let Some(arg) = env.config_arg(signal) {
+                    if let Some(v) = env.global_expr(&format!("{}.{name}", arg.name)) {
+                        return v;
+                    }
+                }
                 if let Some(b) = env.bundle_of(signal) {
                     if b.fields.iter().any(|(f, _)| f == name) {
                         return Expr::Ident(format!("{}_{name}", b.prefix), *pos);
