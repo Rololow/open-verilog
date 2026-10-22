@@ -738,6 +738,8 @@ fn list_method(base: &Expr, method: &str, args: &[Expr], env: &Env, pos: Pos) ->
             let dtype = DType { name: "logic".into(), packed: vec![(num(i64::from(w) - 1), num(0))], ..DType::default() };
             let reg = |j: usize| format!("ov_dly{id}_{j}");
             for j in 1..=k {
+                // a register is a signal too, so the delay of a delay (`x.delay(1).delay(1)`) knows its width
+                env.define_signal(&reg(j), dtype.clone(), Vec::new());
                 env.push_delay_decl(Item {
                     pos,
                     kind: ItemKind::Decl(Decl { dtype: dtype.clone(), decls: vec![Declarator { name: reg(j), dims: Vec::new(), init: None }], is_const: false, is_async: false }),

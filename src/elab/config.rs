@@ -44,6 +44,12 @@ pub fn evaluate(name: &str, globals: &Env, overrides: &[(String, i64)], file: &s
         }
     }
     let mut env = globals.scope();
+    // the entries of a manifest are named by their keys in the fields: `array.k` in `config V3 from "v3.toml"`
+    for def in &chain {
+        for (key, value) in globals.manifest_entries(&def.name) {
+            env.define_expr(&key, value);
+        }
+    }
     let mut values = Vec::new();
     for (f, e) in &fields {
         // a field is a constant: an integer, or a string (a file name), which is kept as an expression

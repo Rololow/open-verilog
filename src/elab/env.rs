@@ -497,6 +497,12 @@ impl Env {
         self.exprs.borrow().get(name).cloned().or_else(|| self.global_exprs.borrow().get(name).cloned())
     }
 
+    /// The entries of a manifest config, without the config's name: `array.k` for `V3.array.k`.
+    pub fn manifest_entries(&self, config: &str) -> Vec<(String, crate::ast::Expr)> {
+        let prefix = format!("{config}.");
+        self.global_exprs.borrow().iter().filter_map(|(k, v)| k.strip_prefix(&prefix).map(|rest| (rest.to_string(), v.clone()))).collect()
+    }
+
     /// A parameter of the module that is not an integer.
     pub fn define_expr(&self, name: &str, value: crate::ast::Expr) {
         self.exprs.borrow_mut().insert(name.to_string(), value);
