@@ -54,6 +54,8 @@ fn emit_module(m: &Module) -> Result<String> {
 struct Emitter {
     out: String,
     ind: usize,
+    /// The generate loops written so far in the module: each block gets its own name.
+    blocks: usize,
 }
 
 impl Emitter {
@@ -94,6 +96,18 @@ impl Emitter {
                 self.always(&format!("{keyword} @({sens})"), body)
             }
             ItemKind::Instance(i) => self.instance(i),
+            ItemKind::GenFor { header, body } => {
+                let bound = header.bound.as_ref().ok_or_else(|| Error::new("a generate loop needs a range", "", 0, 0))?;
+                let v = &header.var;
+                let block = format!("gen{}", self.blocks);
+                self.blocks += 1;
+                self.line(&format!("for (genvar {v} = {}; {v} {} {}; {v}++) begin : {block}", expr(&header.lo, -1, false)?, header.cmp, expr(bound, -1, false)?));
+                self.ind += 1;
+                self.items(body)?;
+                self.ind -= 1;
+                self.line("end");
+                Ok(())
+            }
             ItemKind::GenIf { cond, then, els } => {
                 self.line(&format!("if ({}) begin", expr(cond, -1, false)?));
                 self.ind += 1;
@@ -136,7 +150,7 @@ impl Emitter {
                 self.line("endtask");
                 Ok(())
             }
-            ItemKind::GenFor { .. } | ItemKind::TieOff(_) | ItemKind::Stage { .. } | ItemKind::Ctrl { .. } | ItemKind::Fn { .. } | ItemKind::Proc { .. } | ItemKind::MemMap { .. } | ItemKind::Fsm { .. } | ItemKind::Reset { .. } | ItemKind::Clock { .. } | ItemKind::Val { .. } => {
+            ItemKind::TieOff(_) | ItemKind::Stage { .. } | ItemKind::Ctrl { .. } | ItemKind::Fn { .. } | ItemKind::Proc { .. } | ItemKind::MemMap { .. } | ItemKind::Fsm { .. } | ItemKind::Reset { .. } | ItemKind::Clock { .. } | ItemKind::Val { .. } => {
                 Err(Error::new("this item is not supported in SystemVerilog output yet", "", 0, 0))
             }
         }

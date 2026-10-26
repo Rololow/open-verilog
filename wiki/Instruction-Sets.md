@@ -1,10 +1,10 @@
 # Instruction sets
 
 An `isa` block describes the instruction formats once. The compiler uses it for decoding views in the hardware, and the
-Python reference can also write from it a SystemVerilog package of field positions, a Python encoder and decoder, and
+compiler can also write from it a SystemVerilog package of field positions, a Python encoder and decoder, and
 the documentation.
 
-```ov
+```systemverilog ov
 const N_BANKS = 4, BANK_ADDR_L = 4, DATA_MEM_ADDR_L = 10;
 
 isa Einsum "toy accelerator" : opcode 4 max 128 {
@@ -46,4 +46,4 @@ module Decoder(input logic [63:0] instr, input logic [1:0] bank, output logic [3
 - `--emit-doc FILE`: the documentation of the formats.
 
 The package and the decoder are generated from the same definition, so they cannot disagree. The Rust compiler writes
-the same three files as the Python reference (see [Command line](Command-Line)).
+in one command (see [Command line](Command-Line)).

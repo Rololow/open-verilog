@@ -9,7 +9,7 @@ Open Verilog. The input `c` enters with the instruction, so the `add` stage read
 with this instruction. Reading it as a plain `c` is an error, because a later stage could otherwise see a value that
 belongs to another instruction.
 
-```ov
+```systemverilog ov
 pipeline Mac(input clk, input rst, input logic valid_in,
              input logic [7:0] a, input logic [7:0] b, input logic [7:0] c,
              output logic [15:0] y, output logic valid_out) {
@@ -82,7 +82,7 @@ The priority at each boundary is: reset, flush, hold, bubble, load.
 `for` inside a pipeline generates stages, one per iteration: `step_0`, ..., `step_{N-1}`. A pipeline-level array is
 split into one signal per element, and each element belongs to the stage that drives it.
 
-```ov
+```systemverilog ov
 pipeline AddChain<int N = 4>(
   input clk, input rst, input logic valid_in, input logic [7:0] d,
   output logic [7:0] y, output logic valid_out

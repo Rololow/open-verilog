@@ -26,4 +26,4 @@ the compiler does not support is reported this way; nothing is dropped silently.
 
 ## Not in the Rust CLI yet
 
-- `lint` and `cover`: available in the Python reference, not in `ovc`.
+- `lint` and `cover`: not in `ovc` yet.

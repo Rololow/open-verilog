@@ -1,4 +1,5 @@
-//! Compiled output must match the reference SystemVerilog byte for byte.
+//! Compiled output must match the reference SystemVerilog byte for byte. The reference is the output of this
+//! compiler: it was checked by simulation (see the wiki), and it is regenerated when the output changes on purpose.
 
 use std::fs;
 use std::path::PathBuf;

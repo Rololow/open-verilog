@@ -59,7 +59,7 @@ fn a_vector_of_bundles_is_one_bundle_per_element() {
     // each field of the vector is one signal: its bits are the elements' (valid), or an array (data)
     assert!(out.contains("input logic [1:0] in_valid"), "{out}");
     assert!(out.contains("assign out_valid = in_valid[1];"), "{out}");
-    assert!(out.contains("assign in_ready[0] = out_ready;"), "{out}");
+    assert!(out.contains("assign in_ready[i] = out_ready;"), "{out}");
 }
 
 #[test]
@@ -267,7 +267,9 @@ fn a_loop_over_rows_in_always_comb_unrolls_each_row() {
     }
   }
 }");
-    assert!(!out.contains("for ("), "{out}");
+    // the rows are unrolled; the loop over the lanes of a row is a loop of its own
+    assert!(!out.contains("for (int k"), "{out}");
+    assert!(out.contains("for (int i = 0; i < 3; i++)"), "{out}");
 }
 
 #[test]

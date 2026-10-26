@@ -10,7 +10,7 @@ can:
 - `a.zext(w)`, `a.sext(w)`: zero- or sign-extension to `w` bits;
 - `a.msb()`, `a.lsb()`: the first and last bit.
 
-```ov
+```systemverilog ov
 module Bits(
   input  logic [7:0] a,
   input  logic [3:0] b,
@@ -38,7 +38,7 @@ module Bits(
 `reduce` and `tree_reduce`. `tree_reduce` combines the elements as a balanced tree instead of a chain: for four inputs,
 the adder below is `in[0] + in[1] + (in[2] + in[3])`. The tree is built at elaboration.
 
-```ov
+```systemverilog ov
 module Adder<int N = 4, int W = 8>(
   input  logic [W-1:0] in [N],
   output logic [W+clog2(N)-1:0] sum
@@ -56,7 +56,7 @@ module VecSum<int N = 4, int W = 8>(input Vec<logic [W-1:0], N> in, output logic
 A module can declare a method with `fn`. A call is combinational, and each call site gets its own ports, so several
 reads can happen in the same cycle. Here a register file has two read ports and a third, fixed one.
 
-```ov
+```systemverilog ov
 module RegFile(input clk, input rst, input logic we, input logic [1:0] wa, input logic [7:0] wd) {
   logic [7:0] mem [4];
   always_ff @(posedge clk) {
@@ -79,7 +79,7 @@ module Dual(input clk, input rst, input logic we, input logic [1:0] wa, input lo
 
 A struct can have methods. Its field names are usable inside them.
 
-```ov
+```systemverilog ov
 struct Pixel {
   logic [7:0] r;
   logic [7:0] g;
@@ -99,7 +99,7 @@ module Luma(input Pixel p, input logic [7:0] k, output logic [9:0] s, output log
 `for` at module level generates hardware, once per iteration. Inside `always_comb`, a `for` unrolls into logic. Several
 values can share one `case` arm.
 
-```ov
+```systemverilog ov
 module Cell<int W = 8>(input clk, input logic [W-1:0] d, output logic [W-1:0] q) {
   always_ff @(posedge clk) { q <= d; }
 }

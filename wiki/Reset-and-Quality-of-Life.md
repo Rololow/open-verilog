@@ -3,7 +3,7 @@
 Most of the code a module needs is the same in every module: a clock, a reset, a register that restarts at a value, a
 signal whose width is the sum of its operands. Open Verilog states these once.
 
-```ov
+```systemverilog ov
 // `clk` and `rst` are detected; `reg x = init` is reset to init by `always_ff { }` (no @).
 module Counter2<int W = 8>(input clk, input rst, input en, output logic [W-1:0] q) {
   reg [W-1:0] cnt = 0;

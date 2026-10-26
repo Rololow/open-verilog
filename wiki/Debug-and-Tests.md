@@ -5,7 +5,7 @@
 A module can read a signal deep inside its instances, and drive an input that has a default, without editing the modules
 in between. The compiler adds the ports on the way up and down.
 
-```ov
+```systemverilog ov
 module Counter(input clk, input rst, input hold = 0, output logic [7:0] q) {
   always_ff @(posedge clk) { if (rst) { q <= 0; } else if (!hold) { q <= q + 1; } }
 }
@@ -31,7 +31,7 @@ module Soc(input clk, input rst, input dbg_halt, output logic [7:0] sum, output 
 A probe is debug logic kept out of the design. It is written in its own block, bound into every instance of a module
 when the probe file is emitted, and removed from the design itself.
 
-```ov
+```systemverilog ov
 module Pe(input clk, input rst, input logic [1:0] mode, input logic [7:0] din, output logic [7:0] acc) {
   logic [7:0] prod;
   assign prod = (din * 3).wrap();
@@ -62,7 +62,7 @@ test "accumulates" for Top {
 
 A `test` block drives a module and checks its outputs. It is written next to the design.
 
-```ov
+```systemverilog ov
 module Counter<int W = 8>(input clk, input rst, input en, output logic [W-1:0] q) {
   always_ff @(posedge clk) { if (rst) { q <= 0; } else if (en) { q <= (q + 1).wrap(); } }
 }

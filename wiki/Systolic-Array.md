@@ -5,7 +5,7 @@ arrives from the left by the value that arrives from the top, adds it to its acc
 The rows of A enter from the left, the columns of B from the top, and each one is delayed so that the right values meet
 in each PE: row `i` is delayed `i` cycles, column `j` is delayed `j` cycles.
 
-```ov
+```systemverilog ov
 // TPU-style output-stationary systolic array: C = A x B for N x N matrices.
 // Row i of A enters from the left delayed by i cycles, column j of B from the top delayed by j cycles
 // (the classic input skew, one `.delay()` each); every PE multiplies, accumulates and passes its inputs on.

@@ -25,8 +25,9 @@ module M<config C = Cf>(input logic [7:0] a [4], output logic [7:0] y [4]) {
 }
 ";
     let sv = compile(src, &file);
-    assert!(sv.contains("assign y[3] = a[3];"), "{sv}");
-    assert!(!sv.contains("assign y[4]"), "{sv}");
+    // the loop is a generate loop over the four lanes the manifest gives
+    assert!(sv.contains("for (genvar lane = 0; lane < 4; lane++)"), "{sv}");
+    assert!(sv.contains("assign y[lane] = a[lane];"), "{sv}");
 }
 
 #[test]
@@ -53,9 +54,9 @@ fn a_delay_of_a_delay_knows_its_width() {
 }
 ";
     let sv = compile(src, "m.ov");
-    assert!(sv.contains("logic [7:0] ov_dly2_1;"), "{sv}");
-    assert!(sv.contains("ov_dly2_1 <= ov_dly1_1;"), "{sv}");
-    assert!(sv.contains("assign y = ov_dly2_1;"), "{sv}");
+    assert!(sv.contains("logic [7:0] m_d1_d1;"), "{sv}");
+    assert!(sv.contains("m_d1_d1 <= m_d1;"), "{sv}");
+    assert!(sv.contains("assign y = m_d1_d1;"), "{sv}");
 }
 
 #[test]
@@ -65,7 +66,7 @@ fn a_delay_of_an_element_of_a_two_dimensional_array() {
 }
 ";
     let sv = compile(src, "m.ov");
-    assert!(sv.contains("logic [7:0] ov_dly1_1;"), "{sv}");
-    assert!(sv.contains("ov_dly1_1 <= p[2][0];"), "{sv}");
-    assert!(sv.contains("ov_dly2_2 <= ov_dly2_1;"), "{sv}");
+    assert!(sv.contains("logic [7:0] p_2_0_d1;"), "{sv}");
+    assert!(sv.contains("p_2_0_d1 <= p[2][0];"), "{sv}");
+    assert!(sv.contains("p_2_1_d2 <= p_2_1_d1;"), "{sv}");
 }

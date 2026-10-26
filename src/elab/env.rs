@@ -44,6 +44,8 @@ pub struct Env {
     tables: Rc<RefCell<BTreeSet<String>>>,
     delay_blocks: Rc<RefCell<Vec<crate::ast::Item>>>,
     delay_count: Rc<Cell<usize>>,
+    /// The names of the delay lines made so far (shared by the copies of the environment).
+    delay_names: Rc<RefCell<BTreeSet<String>>>,
     structs: Rc<HashMap<String, StructInfo>>,
     /// Signal name -> the struct type it was declared with (only for struct-typed signals).
     struct_of: Rc<RefCell<HashMap<String, String>>>,
@@ -154,6 +156,7 @@ impl Env {
             tables: Rc::default(),
             delay_blocks: Rc::default(),
             delay_count: Rc::default(),
+            delay_names: Rc::default(),
             views: Rc::default(),
             isa_used: Rc::default(),
             consts: Rc::default(),
@@ -177,6 +180,15 @@ impl Env {
     /// Records a signal defined while elaborating (a `val`), for the uses after it.
     pub fn define_signal(&self, name: &str, dtype: DType, dims: Vec<crate::ast::Expr>) {
         self.signals.borrow_mut().insert(name.to_string(), (dtype, dims));
+    }
+
+    /// The stem of the registers of a delay line on `root`: `root` itself when no other delay line has it, else a
+    /// numbered one.
+    pub fn delay_stem(&self, root: &str) -> String {
+        let mut names = self.delay_names.borrow_mut();
+        let stem = if names.contains(root) { format!("{root}_{}", self.next_delay_id()) } else { root.to_string() };
+        names.insert(stem.clone());
+        stem
     }
 
     pub fn next_delay_id(&self) -> usize {

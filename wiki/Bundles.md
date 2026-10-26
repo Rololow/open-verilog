@@ -11,7 +11,7 @@ A bundle port is flattened in the SystemVerilog output: `out` of type `Stream` b
 Open Verilog. `Stream` declares the valid/ready fields and a method. `Top` connects a source and a sink through one
 local signal.
 
-```ov
+```systemverilog ov
 bundle Stream<type T> {
   output logic valid;
   input  logic ready;

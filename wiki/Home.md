@@ -25,7 +25,7 @@ synthesis tool reads it.
 - [Systolic array](Systolic-Array): a larger design, with input skew.
 - [Pipelines](Pipelines): a three-stage multiply-add, before and after.
 - [Command line](Command-Line): the options of `ovc`.
-- [Status and compatibility](Status): what compiles, what matches the Python reference, what is missing.
+- [Status](Status): what compiles, the checks, what is missing.
 - [Contributing](Contributing): tests, continuous integration, releases, this wiki.
 
 ## Source

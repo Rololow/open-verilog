@@ -7,7 +7,7 @@ examples on this page stay valid.
 
 A module takes integer and type parameters. Bounds and widths come from them, once.
 
-```ov
+```systemverilog ov
 module Adder<int W = 8>(input logic [W-1:0] a, input logic [W-1:0] b, output logic [W:0] s) {
   assign s = a + b;
 }
@@ -20,7 +20,7 @@ A module with a configuration parameter reads its settings from a `config` (see 
 `val` names a value computed at compile time or a signal of the right width. The width is inferred, so you do not
 write it twice.
 
-```ov
+```systemverilog ov
 module Scale<int N = 4>(input logic [7:0] x, output logic [7:0] y) {
   val K = N * 2;
   assign y = (x * K).wrap();
@@ -35,7 +35,7 @@ target.
 An enum is a type with named members. An `fsm` block lists the states and the transitions; the clock and the reset
 are implicit.
 
-```ov
+```systemverilog ov
 enum State { IDLE, BUSY, DONE }
 
 module Handshake(input clk, input rst, input req, output logic ack, output logic busy) {

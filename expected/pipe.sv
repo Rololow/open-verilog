@@ -5,14 +5,10 @@ module Pipe (
 );
   logic [7:0] stage [4];
   assign stage[0] = d;
-  always_ff @(posedge clk) begin
-    stage[1] <= stage[0];
-  end
-  always_ff @(posedge clk) begin
-    stage[2] <= stage[1];
-  end
-  always_ff @(posedge clk) begin
-    stage[3] <= stage[2];
+  for (genvar i = 0; i < 3; i++) begin : gen0
+    always_ff @(posedge clk) begin
+      stage[i + 1] <= stage[i];
+    end
   end
   assign q = stage[3];
 endmodule

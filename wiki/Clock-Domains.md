@@ -6,9 +6,9 @@ registers that drive and read it. A value can only change domain in two ways:
 - through an `async` input, which is a synchronizer: the one place where a signal from another domain may enter;
 - through an `async` declaration, for storage whose stability the design guarantees, such as the memory of a FIFO.
 
-Anything else that crosses a domain is an error, in the Rust compiler as in the Python reference.
+Anything else that crosses a domain is an error.
 
-```ov
+```systemverilog ov
 // two-flop synchronizer: the only place where `d` may come from another domain
 module Sync<int W = 1>(input clk, input async logic [W-1:0] d, output logic [W-1:0] q) {
   logic [W-1:0] meta;

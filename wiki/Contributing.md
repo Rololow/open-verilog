@@ -13,8 +13,8 @@ cargo clippy --all-targets -- -D warnings
 
 ## Rules
 
-- The Python reference decides the behaviour. When the two differ on a construct the examples use, change the Rust
-  output to match.
+- This compiler is the reference. The Python compiler in `ovc/` is no longer maintained: it is only read to find the
+  behaviour of a feature that is not implemented here yet.
 - Every new feature starts from an example in `examples/`, with its expected output in `expected/`.
 - Repository text is in English: code, comments, docs and commit messages.
 

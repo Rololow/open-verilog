@@ -633,6 +633,24 @@ pub(crate) fn substitute(e: &Expr, params: &[String], args: &[Expr]) -> Expr {
 }
 
 /// The list methods: `v.list()` of an array, `(lo..hi).map(f)`, `.reduce(op)`, `.tree_reduce(op)`, and
+/// The name a delay line is built on: the signal it delays, with the constant indices and members of its access
+/// (`a[2]` is `a_2`, `s.hi` is `s_hi`).
+fn delay_root(base: &Expr, env: &Env) -> String {
+    match base {
+        Expr::Ident(name, _) => name.clone(),
+        Expr::Index(inner, idx) => match int_of(&fold_expr(idx, env)) {
+            Some(k) => format!("{}_{k}", delay_root(inner, env)),
+            None => delay_root(inner, env),
+        },
+        Expr::Member(inner, field, _) => format!("{}_{field}", delay_root(inner, env)),
+        Expr::Slice(inner, msb, lsb, op) if op.as_str() == ":" => match (int_of(&fold_expr(msb, env)), int_of(&fold_expr(lsb, env))) {
+            (Some(m), Some(l)) => format!("{}_{m}_{l}", delay_root(inner, env)),
+            _ => delay_root(inner, env),
+        },
+        _ => "dly".into(),
+    }
+}
+
 /// `v.reverse()` of a packed vector. `None` when the call is not one of these on a known shape.
 fn list_method(base: &Expr, method: &str, args: &[Expr], env: &Env, pos: Pos) -> Option<Expr> {
     let items: Option<Vec<Expr>> = match base {
@@ -740,9 +758,11 @@ fn list_method(base: &Expr, method: &str, args: &[Expr], env: &Env, pos: Pos) ->
                 return Some(base.clone());
             }
             let w = super::width::width_of(base, env)?.width;
-            let id = env.next_delay_id();
+            // the registers are named after the signal they delay (`a_2_d1`: the first register after `a[2]`), with a
+            // number only when that name is taken
+            let stem = env.delay_stem(&delay_root(base, env));
             let dtype = DType { name: "logic".into(), packed: vec![(num(i64::from(w) - 1), num(0))], ..DType::default() };
-            let reg = |j: usize| format!("ov_dly{id}_{j}");
+            let reg = |j: usize| format!("{stem}_d{j}");
             for j in 1..=k {
                 // a register is a signal too, so the delay of a delay (`x.delay(1).delay(1)`) knows its width
                 env.define_signal(&reg(j), dtype.clone(), Vec::new());
@@ -1115,7 +1135,9 @@ fn fold_block(stmts: &[Stmt], env: &Env) -> Vec<Stmt> {
 /// Unrolled, it is one `if` per iteration, each overriding the one before (the text grows with the range); kept as a
 /// loop, SV says the same in one statement.
 fn sv_loop(header: &ForHeader, body: &Stmt, env: &Env) -> Option<Stmt> {
-    if !is_priority_select(body) {
+    let vars = [header.var.clone()];
+    let plain = is_plain_body(body) && !super::stmt_any_expr(body, &|x| super::variable_range(x, &vars));
+    if !is_priority_select(body) && !plain {
         return None;
     }
     let Expr::Binary(op, lo, hi, _) = fold_expr(&header.lo, env) else { return None };
@@ -1137,6 +1159,19 @@ fn sv_loop(header: &ForHeader, body: &Stmt, env: &Env) -> Option<Stmt> {
         },
         body: boxed_stmt(body, &inner),
     })
+}
+
+/// A loop body made of assignments, conditions, cases and loops, with no declaration: the loop keeps its SystemVerilog
+/// form, which says the same as the unrolled statements.
+pub(crate) fn is_plain_body(s: &Stmt) -> bool {
+    match s {
+        Stmt::Assign { .. } => true,
+        Stmt::Block(v) => v.iter().all(is_plain_body),
+        Stmt::If { then, els, .. } => is_plain_body(then) && els.as_deref().is_none_or(is_plain_body),
+        Stmt::Case { arms, .. } => arms.iter().all(|(_, b)| is_plain_body(b)),
+        Stmt::For { body, .. } => is_plain_body(body),
+        _ => false,
+    }
 }
 
 fn is_priority_select(body: &Stmt) -> bool {

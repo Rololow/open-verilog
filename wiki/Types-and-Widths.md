@@ -8,7 +8,7 @@ One rule decides what a number in a declaration means:
 - dimensions **after** the name, or `Vec<T, N>`, are array sizes: `logic [7:0] a [3]` and `Vec<logic<8>, 3> a` are
   three elements of 8 bits.
 
-```ov
+```systemverilog ov
 module Widths(
   input  logic<8> a,                   // 8 bits, same as logic [7:0]
   input  logic [8] b,                  // 8 bits (shorthand: [N] before the name means N bits)
@@ -24,7 +24,7 @@ module Widths(
 SystemVerilog-style packages work as they do in SystemVerilog, and `.ov` code can use the same types. A packed struct is
 a bit vector: `p.field` is a part-select, and the first field is the most significant bits.
 
-```ov
+```systemverilog ov
 package Defs;
   typedef logic [7:0] byte_t;
   typedef struct packed {
@@ -60,7 +60,7 @@ module Swap(input Pair p, output Pair q) {
 A struct can take parameters, and a field can be a struct. Each struct is a packed SystemVerilog type; its package names
 the types it uses. A parameterized struct gets one type per instance.
 
-```ov
+```systemverilog ov
 struct Pix { logic [7:0] r; logic [7:0] g; }
 
 struct Box<int W> { logic [W-1:0] v; logic [W-1:0] w; }
@@ -82,7 +82,7 @@ module Wide(input Box<8> b, output logic [7:0] y) {
 
 Members of a nested struct are read and written as `p.inner.x`:
 
-```ov
+```systemverilog ov
 struct Point { logic [7:0] x; logic [7:0] y; }
 
 struct Segment { Point from; Point to; logic [3:0] tag; }
@@ -105,7 +105,7 @@ module Start(input logic [7:0] x, input logic [7:0] y, output Segment s) {
 A file can mix classic SystemVerilog modules, with `generate` and `genvar`, and `.ov` modules. Nothing has to be
 converted first.
 
-```ov
+```systemverilog ov
 module Reg8 #(parameter int W = 8) (
   input  logic clk,
   input  logic [W-1:0] d,

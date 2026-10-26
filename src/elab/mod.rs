@@ -18,7 +18,7 @@ use crate::pipeline;
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Arg, Conn, Decl, Declarator, DType, Dir, EnumDef, Expr, File, Instance, Item, ItemKind, Module, Param, Pos, Port, Sens, Stmt, StructDef};
+use crate::ast::{Arg, Conn, Decl, Declarator, DType, Dir, EnumDef, Expr, File, ForHeader, Instance, Item, ItemKind, Module, Param, Pos, Port, Sens, Stmt, StructDef};
 use std::rc::Rc;
 use std::collections::{BTreeMap, BTreeSet};
 use env::{BundleRef, EnumInfo, FnDef, ResetSpec, StructInfo};
@@ -193,6 +193,93 @@ pub struct Elaborated {
     pub handshakes: HashMap<String, Vec<(String, Dir, String)>>,
 }
 
+/// The methods that work on a value whose index is not a constant yet (their widths come from the signal, not the index).
+const SYMBOLIC_METHODS: &[&str] = &["wrap", "reverse", "msb", "lsb", "zext", "sext", "fill"];
+
+/// A method that needs a value to elaborate (`delay` a count, `list` the elements): only `SYMBOLIC_METHODS` work on a
+/// value whose index is not a constant (their widths come from the signal).
+fn value_method(x: &Expr) -> bool {
+    matches!(x, Expr::Call(f, _) if matches!(&**f, Expr::Member(_, m, _) if !SYMBOLIC_METHODS.contains(&m.as_str())))
+}
+
+/// Whether `e` mentions one of the loop variables.
+pub(crate) fn mentions_any(e: &Expr, vars: &[String]) -> bool {
+    expr_any(e, &|y| matches!(y, Expr::Ident(n, _) if vars.contains(n)))
+}
+
+/// A part-select `x[msb:lsb]` whose bounds depend on a loop variable: SystemVerilog needs them constant (the indexed
+/// forms `x[i +: w]` are fine).
+pub(crate) fn variable_range(x: &Expr, vars: &[String]) -> bool {
+    matches!(x, Expr::Slice(_, msb, lsb, op) if op.as_str() == ":" && (mentions_any(msb, vars) || mentions_any(lsb, vars)))
+}
+
+/// An expression that elaborates the same with the loop variables not constant.
+fn symbolic_expr(e: &Expr, vars: &[String]) -> bool {
+    !expr_any(e, &|x| value_method(x) || variable_range(x, vars))
+}
+
+/// Whether some expression of a statement (its targets, values, conditions and bounds) satisfies `pred`.
+pub(crate) fn stmt_any_expr(s: &Stmt, pred: &dyn Fn(&Expr) -> bool) -> bool {
+    match s {
+        Stmt::Assign { lhs, rhs, .. } => expr_any(lhs, pred) || expr_any(rhs, pred),
+        Stmt::Block(v) => v.iter().any(|x| stmt_any_expr(x, pred)),
+        Stmt::If { cond, then, els } => {
+            expr_any(cond, pred) || stmt_any_expr(then, pred) || els.as_deref().is_some_and(|e| stmt_any_expr(e, pred))
+        }
+        Stmt::Case { subject, arms, .. } => {
+            expr_any(subject, pred)
+                || arms.iter().any(|(labels, body)| labels.iter().flatten().any(|l| expr_any(l, pred)) || stmt_any_expr(body, pred))
+        }
+        Stmt::For { header, body } => {
+            expr_any(&header.lo, pred) || header.bound.as_ref().is_some_and(|b| expr_any(b, pred)) || stmt_any_expr(body, pred)
+        }
+        _ => false,
+    }
+}
+
+/// Whether some sub-expression of `e` (itself included) satisfies `pred`.
+fn expr_any(e: &Expr, pred: &dyn Fn(&Expr) -> bool) -> bool {
+    if pred(e) {
+        return true;
+    }
+    let any = |x: &Expr| expr_any(x, pred);
+    match e {
+        Expr::Num(_) | Expr::Ident(..) | Expr::OpRef(_) | Expr::Type(_) => false,
+        Expr::Unary(_, a) | Expr::Member(a, _, _) | Expr::Keyed(_, a) => any(a),
+        Expr::Binary(_, a, b, _) | Expr::Index(a, b) | Expr::Cast(a, b) => any(a) || any(b),
+        Expr::Ternary(c, a, b) => any(c) || any(a) || any(b),
+        Expr::Slice(a, b, c, _) => any(a) || any(b) || any(c),
+        Expr::Call(f, args) => any(f) || args.iter().any(any),
+        Expr::Concat(v) | Expr::List(v) | Expr::Pattern(v) => v.iter().any(any),
+        Expr::Repl(n, v) => any(n) || v.iter().any(any),
+        Expr::Lambda(_, body) => any(body),
+        Expr::InSet(x, items) => any(x) || items.iter().any(|i| any(&i.lo) || i.hi.as_ref().is_some_and(any)),
+        Expr::Match(x, arms) => any(x) || arms.iter().any(|(labels, v)| any(v) || labels.iter().flatten().any(|i| any(&i.lo) || i.hi.as_ref().is_some_and(any))),
+        Expr::With(base, fields, _) => any(base) || fields.iter().any(|(_, v)| any(v)),
+    }
+}
+
+/// Whether every expression of a statement is symbolic in the loop variables.
+fn stmt_exprs_symbolic(s: &Stmt, vars: &[String]) -> bool {
+    !stmt_any_expr(s, &|x| value_method(x) || variable_range(x, vars))
+}
+
+/// The names a source uses: every identifier and every member name (the Debug text of the tree, where each one is a string
+/// followed by its position).
+fn names_in_source(source: &File) -> HashSet<String> {
+    let text = format!("{source:?}");
+    let mut names = HashSet::new();
+    let mut from = 0;
+    while let Some(found) = text[from..].find("\", (") {
+        let at = from + found;
+        if let Some(open) = text[..at].rfind('"') {
+            names.insert(text[open + 1..at].to_string());
+        }
+        from = at + 1;
+    }
+    names
+}
+
 /// The handshake bundles among the references of a port: those with valid and ready fields, not a monitor. Each one is
 /// named as the flattened signals are (`p_s`) and shown as the source names it (`p.s`).
 fn handshake_refs(base: &str, refs: &[(String, BundleRef)]) -> Vec<(String, Dir, String)> {
@@ -348,6 +435,7 @@ pub fn elaborate(source: &File, file: &str, asserts: bool, top: Option<&DType>) 
         memmaps: Vec::new(),
         envs: HashMap::new(),
         handshakes: HashMap::new(),
+        used_names: names_in_source(source),
     };
     // roots: the modules that nothing instantiates, extends or binds as a module parameter; each emits its
     // dependencies first. The others are emitted where they are instantiated.
@@ -447,6 +535,9 @@ struct Design<'a> {
     memmaps: Vec<(String, String, Vec<env::MapDev>)>,
     /// The environment of each module elaborated, by emitted name.
     envs: HashMap<String, Env>,
+    /// Every name the source uses as an identifier or a member (`inst.port`): an instance with one of these names may be
+    /// read from another module, so its loop is unrolled (its name must stay as it is).
+    used_names: HashSet<String>,
     /// The handshake ports of each module (by emitted name): the bundle ports with valid and ready, and their role.
     handshakes: HashMap<String, Vec<(String, Dir, String)>>,
     /// Block-local variables hoisted to the module so far (their names are numbered).
@@ -484,6 +575,46 @@ fn view_struct_key(expr: &Expr, env: &Env) -> Option<String> {
 }
 
 impl<'a> Design<'a> {
+    /// The constant bounds of a generate loop that stays a loop: a range `lo..hi` whose body is instances, continuous
+    /// and procedural assignments, and loops of the same kind. Other loops are unrolled.
+    fn generate_bounds(&self, header: &ForHeader, body: &[Item], env: &Env, outer: &[String]) -> Option<(i64, i64)> {
+        if header.bound.is_some() || header.step.is_some() {
+            return None;
+        }
+        let Expr::Binary(op, lo, hi, _) = fold_expr(&header.lo, env) else { return None };
+        if op != ".." {
+            return None;
+        }
+        let bounds = (int_of(&lo)?, int_of(&hi)?);
+        let mut inner = env.clone();
+        inner.unbind(&header.var);
+        let mut vars = outer.to_vec();
+        vars.push(header.var.clone());
+        body.iter().all(|it| self.plain_generate_item(it, &vars, &inner)).then_some(bounds)
+    }
+
+    fn plain_generate_item(&self, item: &Item, vars: &[String], env: &Env) -> bool {
+        match &item.kind {
+            ItemKind::Instance(i) => {
+                let targs_plain = i.targs.iter().all(|(_, a)| match a {
+                    Arg::Expr(e) => !mentions_any(e, vars),
+                    Arg::Type(_) => true,
+                });
+                let target = env.module_alias(&i.module).unwrap_or(&i.module);
+                let scalar_ports = self.by_name.get(target).is_some_and(|m| {
+                    m.ports.iter().all(|p| self.globals.bundle_def(&p.dtype.name).is_none() && bundle::vec_of(&p.dtype).is_none())
+                });
+                targs_plain && scalar_ports && !self.used_names.contains(&i.name)
+            }
+            ItemKind::ContAssign { lhs, rhs } => symbolic_expr(lhs, vars) && symbolic_expr(rhs, vars),
+            ItemKind::Comment(_) => true,
+            ItemKind::AlwaysComb(body) => fold::is_plain_body(body) && stmt_exprs_symbolic(body, vars),
+            ItemKind::Always { sens: Sens::Edges(_), body, .. } => fold::is_plain_body(body) && stmt_exprs_symbolic(body, vars),
+            ItemKind::GenFor { header, body } => self.generate_bounds(header, body, env, vars).is_some(),
+            _ => false,
+        }
+    }
+
     /// The monitors of a bundle port: an instance of each, on the clock and reset and the port.
     fn monitor_items(&self, def: &crate::ast::BundleDef, p: &Port, env: &Env, ctx: &Ctx) -> Result<Vec<Item>> {
         // a monitor watches the slave ports of its bundle
@@ -619,8 +750,11 @@ impl<'a> Design<'a> {
         for it in &m.items {
             match &it.kind {
                 ItemKind::Val { name, expr } => {
-                    if let Some(v) = int_of(&fold_expr(expr, &env)) {
-                        env.define_const(name, v);
+                    // a delay line is a register, never a constant: folding it here would build it twice
+                    if !expr_any(expr, &|x| matches!(x, Expr::Call(f, _) if matches!(&**f, Expr::Member(_, m, _) if m == "delay"))) {
+                        if let Some(v) = int_of(&fold_expr(expr, &env)) {
+                            env.define_const(name, v);
+                        }
                     }
                 }
                 // `const int A = 0, B = 1;` with integer values: compile-time constants, nothing is emitted
@@ -978,6 +1112,18 @@ impl<'a> Design<'a> {
                             out.push(at(ItemKind::GenIf { cond, then: then_out, els: els_out }));
                         }
                     }
+                }
+                ItemKind::GenFor { header, body } if self.generate_bounds(header, body, env, &[]).is_some() => {
+                    // a loop of instances and assignments stays a loop: the body is elaborated once, with the loop
+                    // variable as a genvar (`for (genvar i = 0; i < 4; i++) begin ... end`)
+                    let (lo, hi) = self.generate_bounds(header, body, env, &[]).unwrap_or((0, 0));
+                    let mut inner = env.clone();
+                    inner.unbind(&header.var);
+                    inner.define_signal(&header.var, DType { name: "int".into(), ..DType::default() }, Vec::new());
+                    let mut elaborated = Vec::new();
+                    self.elab_items(body, &inner, ctx, loops, &mut elaborated)?;
+                    let bounds = ForHeader { var: header.var.clone(), lo: Expr::Num(lo.to_string()), bound: Some(Expr::Num(hi.to_string())), cmp: "<".into(), step: None, pos: header.pos };
+                    out.push(at(ItemKind::GenFor { header: bounds, body: elaborated }));
                 }
                 ItemKind::GenFor { header, body } => {
                     let values = loop_values(header, env).ok_or_else(|| ctx.at(item.pos).err("the bounds of a generate loop must be constant"))?;

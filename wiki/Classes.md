@@ -3,7 +3,7 @@
 A module can have methods, can extend another module, and can declare a trait that its instances must provide. A module
 can also be a parameter of another module.
 
-```ov
+```systemverilog ov
 trait Valid {
   fn is_valid() -> logic;
 }

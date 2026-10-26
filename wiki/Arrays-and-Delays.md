@@ -8,7 +8,7 @@ writes the reset by hand.
 
 Open Verilog. A `reg` array is reset to zero by the implicit clock and reset, so there is no reset code.
 
-```ov
+```systemverilog ov
 module BankHold<int NB = 4, int HOLD = 8>(input clk, input rst,
                                           input logic [clog2(NB)-1:0] issue_bank, input logic issue) {
   reg [7:0] hold [NB];
@@ -50,7 +50,7 @@ The reset loop is the part that gets forgotten: a register array without it star
 
 Open Verilog. `delay(D)` is a chain of `D` registers.
 
-```ov
+```systemverilog ov
 module Lanes<int N = 8, int W = 16, int D = 3>(input clk, input logic [W-1:0] x [N], output logic [W-1:0] y [N]) {
   for lane in 0..N { assign y[lane] = x[lane].delay(D); }
 }
@@ -82,3 +82,30 @@ endmodule
 - The bounds (`NB`, `N`, `D`) are written once. In SystemVerilog they appear in the loop, the declaration and the reset.
 - Reset is implicit for `reg`. In SystemVerilog it is a loop you have to write.
 - `delay(D)` replaces the two-dimensional register array, its two loops and the index `[D-1]`.
+
+## What the compiler writes
+
+A loop of instances or assignments that does not need a value at compile time stays a loop in the SystemVerilog, a
+`generate` loop with a `genvar`. The shift chain of [Language tour](Language-Tour) is written this way:
+
+```systemverilog
+  for (genvar i = 0; i < 4; i++) begin : gen0
+    Cell__8 c (.clk(clk), .d(stage[i]), .q(stage[i + 1]));
+  end
+```
+
+The registers of a delay line are named after the signal they delay (`x_0_d1` is the first register after `x[0]`). A
+delay with a count that depends on the loop is unrolled, since its register count is a compile-time value; the lanes
+above are unrolled for that reason:
+
+```systemverilog
+  logic [15:0] x_0_d1;
+  logic [15:0] x_0_d2;
+  logic [15:0] x_0_d3;
+  always_ff @(posedge clk) begin
+    x_0_d1 <= x[0];
+    x_0_d2 <= x_0_d1;
+    x_0_d3 <= x_0_d2;
+  end
+  assign y[0] = x_0_d3;
+```

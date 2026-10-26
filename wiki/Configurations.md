@@ -3,7 +3,7 @@
 A `config` is a compile-time record. A module takes one as a parameter and reads its fields. Fields can depend on
 earlier fields, a config can derive from another, and a use can override fields.
 
-```ov
+```systemverilog ov
 config CpuCfg {
   xlen = 32;
   lanes = 2;

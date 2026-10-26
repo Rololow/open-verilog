@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use crate::ast::{Conn, Dir, Expr, Instance, ItemKind, Module, Port, Pos, Sens, Stmt};
+use crate::ast::{Conn, Dir, Expr, Instance, Item, ItemKind, Module, Port, Pos, Sens, Stmt};
 use crate::error::{Error, Result};
 
 /// A clock token: a clock input port of the module, a clock generated inside it, the value of an input port (for a
@@ -165,7 +165,7 @@ fn reads(e: &Expr, out: &mut BTreeSet<String>) {
     }
 }
 
-fn reads_of(e: &Expr) -> BTreeSet<String> {
+pub(crate) fn reads_of(e: &Expr) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     reads(e, &mut out);
     out
@@ -368,6 +368,19 @@ impl Checker<'_> {
     }
 }
 
+/// The items of a module, with those of its generate loops and conditions in place of the loop: the check sees the
+/// instances and assignments of a generate block as if they were written at the top.
+fn flatten_items(items: &[Item]) -> Vec<&Item> {
+    let mut out = Vec::new();
+    for it in items {
+        match &it.kind {
+            ItemKind::GenFor { body, .. } | ItemKind::GenIf { then: body, .. } => out.extend(flatten_items(body)),
+            _ => out.push(it),
+        }
+    }
+    out
+}
+
 /// The domain summary of one module, after its checks. Errors stop at the first one; warnings are collected.
 fn check_module(
     m: &Module,
@@ -375,9 +388,10 @@ fn check_module(
     summaries: &HashMap<String, Summary>,
     warnings: &mut Vec<String>,
 ) -> Result<Summary> {
+    let items = flatten_items(&m.items);
     let ports: BTreeMap<&str, &Port> = m.ports.iter().map(|p| (p.name.as_str(), p)).collect();
     let mut signals: BTreeSet<String> = m.ports.iter().map(|p| p.name.clone()).collect();
-    for it in &m.items {
+    for it in &items {
         if let ItemKind::Decl(d) = &it.kind {
             if !d.is_const {
                 signals.extend(d.decls.iter().map(|x| x.name.clone()));
@@ -386,7 +400,7 @@ fn check_module(
     }
     // `assign clk2 = clk1;` makes two names one clock
     let mut alias: HashMap<String, String> = HashMap::new();
-    for it in &m.items {
+    for it in &items {
         if let ItemKind::ContAssign { lhs: Expr::Ident(l, _), rhs: Expr::Ident(r, _) } = &it.kind {
             alias.insert(l.clone(), r.clone());
         }
@@ -407,7 +421,7 @@ fn check_module(
         }
     };
     // `same_domain a, b;`: synchronous clocks, one class
-    for it in &m.items {
+    for it in &items {
         if let ItemKind::SameDomain(names) = &it.kind {
             let toks: Vec<Tok> = names.iter().map(|n| clock_token(&ck, n)).collect();
             for t in toks.iter().skip(1) {
@@ -418,7 +432,7 @@ fn check_module(
         }
     }
     // the domains of the signals that are given one: async declarations, and the input ports
-    for it in &m.items {
+    for it in &items {
         if let ItemKind::Decl(d) = &it.kind {
             if d.is_async {
                 for x in &d.decls {
@@ -443,7 +457,7 @@ fn check_module(
     // a specialised module (`Ram__32_512`) is named as its source (`Ram`), as the reset messages show it
     let source_name = m.name.split("__").next().unwrap_or(&m.name).to_string();
     let here = |pos: Pos| Where { label: source_name.clone(), module: None, pos };
-    for it in &m.items {
+    for it in &items {
         match &it.kind {
             ItemKind::ContAssign { lhs, rhs } => {
                 let mut out = Vec::new();

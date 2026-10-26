@@ -13,7 +13,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WIKI = ROOT / "wiki"
 LINK = re.compile(r"\]\(([^)\s]+)\)")
-BLOCK = re.compile(r"^```ov\n(.*?)^```", re.MULTILINE | re.DOTALL)
+BLOCK = re.compile(r"^```systemverilog ov\n(.*?)^```", re.MULTILINE | re.DOTALL)
 
 
 def check_links(pages):
