@@ -304,6 +304,7 @@ fn item_word(kind: &ItemKind) -> &'static str {
         ItemKind::TieOff(_) => "tie_off",
         ItemKind::Stage { .. } => "a nested stage",
         ItemKind::Comment(_) | ItemKind::Raw(_) => "a comment",
+        ItemKind::SameDomain(_) => "a same_domain declaration",
         ItemKind::Initial(_) => "an initial block",
         ItemKind::Fn { .. } => "a function",
         ItemKind::Fsm { .. } => "an fsm",

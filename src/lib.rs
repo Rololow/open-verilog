@@ -4,6 +4,7 @@
 //! (modules refer to each other across files), and emitted per origin file.
 
 pub mod ast;
+pub mod domains;
 pub mod elab;
 pub mod emit;
 pub mod error;
@@ -86,9 +87,11 @@ pub fn compile_parsed(parsed: Vec<File>, options: &Options) -> Result<Compiled> 
     }
     library::merge(&mut source)?;
     let top = options.top.as_deref().map(|t| parser::parse_top(t, "<--top>")).transpose()?;
-    let elab::Elaborated { mut modules, pipelines, warnings, tests, probes, envs, procs, memmaps, records, isas, packages } =
+    let elab::Elaborated { mut modules, pipelines, mut warnings, tests, probes, envs, procs, memmaps, records, isas, packages, handshakes } =
         elab::elaborate(&source, "<project>", options.asserts, top.as_ref())?;
     hier::thread(&mut modules, "<project>")?;
+    // the clock domains are checked on the design as elaborated and connected: children before parents
+    warnings.extend(domains::check(&modules, &handshakes)?);
     let tests_sv = if tests.is_empty() { None } else { Some(testgen::generate(&tests, &modules, &envs, &procs, "<project>")?) };
     let probes_sv = if probes.is_empty() { None } else { Some(probes::generate(&probes, &modules, "<project>")?) };
     let packages: String = packages.iter().map(|(_, text)| text.as_str()).collect();

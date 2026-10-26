@@ -8,7 +8,8 @@ use ovc::ast::File;
 use ovc::error::Error;
 
 const USAGE: &str = "\
-usage: ovc FILE.ov... [-o OUT.sv] [--emit-tests TB.sv] [--emit-probes P.sv] [--dump-pipeline] [--no-asserts] [--werror]
+usage: ovc FILE.ov... [-o OUT.sv] [--emit-tests TB.sv] [--emit-probes P.sv] [--emit-isa-sv P.sv] [--emit-isa-py P.py]
+             [--emit-doc DOC.md] [--dump-pipeline] [--no-asserts] [--werror]
        ovc build PATH... [-o OUT_DIR] [--root DIR]
 
   FILE.ov...      the files are one design: they are compiled together, the SystemVerilog goes to -o or stdout

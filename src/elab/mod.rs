@@ -189,6 +189,24 @@ pub struct Elaborated {
     pub isas: Vec<isa::IsaInfo>,
     /// The packages of the packed structs: the file each is defined in, and its text.
     pub packages: Vec<(String, String)>,
+    /// The handshake ports of each module (by emitted name): the bundle ports with valid and ready, and their role.
+    pub handshakes: HashMap<String, Vec<(String, Dir, String)>>,
+}
+
+/// The handshake bundles among the references of a port: those with valid and ready fields, not a monitor. Each one is
+/// named as the flattened signals are (`p_s`) and shown as the source names it (`p.s`).
+fn handshake_refs(base: &str, refs: &[(String, BundleRef)]) -> Vec<(String, Dir, String)> {
+    refs.iter()
+        .filter(|(_, b)| b.fields.iter().any(|(f, _)| f == "valid") && b.fields.iter().any(|(f, _)| f == "ready"))
+        .filter(|(_, b)| b.role != Dir::Monitor)
+        .map(|(key, b)| {
+            let shown = match key.strip_prefix(base).and_then(|rest| rest.strip_prefix('_')) {
+                Some(path) => format!("{base}.{}", path.replace('_', ".")),
+                None => key.clone(),
+            };
+            (key.clone(), b.role, shown)
+        })
+        .collect()
 }
 
 /// The modules with their base modules merged in (`extends`), and the traits checked.
@@ -329,6 +347,7 @@ pub fn elaborate(source: &File, file: &str, asserts: bool, top: Option<&DType>) 
         local_count: 0,
         memmaps: Vec::new(),
         envs: HashMap::new(),
+        handshakes: HashMap::new(),
     };
     // roots: the modules that nothing instantiates, extends or binds as a module parameter; each emits its
     // dependencies first. The others are emitted where they are instantiated.
@@ -403,7 +422,7 @@ pub fn elaborate(source: &File, file: &str, asserts: bool, top: Option<&DType>) 
         .collect();
     // the packages of the packed structs, the instances included, in the order they were built
     let packages = globals.packages();
-    Ok(Elaborated { modules: design.out, pipelines: design.pipelines, warnings: design.warnings, tests, probes, envs: design.envs, procs, memmaps: design.memmaps, records, isas: isa_list, packages })
+    Ok(Elaborated { modules: design.out, pipelines: design.pipelines, warnings: design.warnings, tests, probes, envs: design.envs, procs, memmaps: design.memmaps, records, isas: isa_list, packages, handshakes: design.handshakes })
 }
 
 struct Ctx<'a> {
@@ -428,6 +447,8 @@ struct Design<'a> {
     memmaps: Vec<(String, String, Vec<env::MapDev>)>,
     /// The environment of each module elaborated, by emitted name.
     envs: HashMap<String, Env>,
+    /// The handshake ports of each module (by emitted name): the bundle ports with valid and ready, and their role.
+    handshakes: HashMap<String, Vec<(String, Dir, String)>>,
     /// Block-local variables hoisted to the module so far (their names are numbered).
     local_count: usize,
     /// Top-level constants and the enums.
@@ -532,6 +553,8 @@ impl<'a> Design<'a> {
         env.set_enums(table.clone());
         let mut ports = Vec::new();
         let mut bundle_of: HashMap<String, BundleRef> = HashMap::new();
+        // the handshake ports of the module: name, role, and how it is shown in the messages (`p.s` for `p_s`)
+        let mut handshakes: Vec<(String, Dir, String)> = Vec::new();
         let mut monitor_items: Vec<Item> = Vec::new();
         let mut struct_of: HashMap<String, String> = HashMap::new();
         for p in &m.ports {
@@ -540,6 +563,7 @@ impl<'a> Design<'a> {
                 for k in 0..n {
                     let element = Port { name: format!("{}_{k}", p.name), dtype: elem.clone(), ..p.clone() };
                     let (expanded, refs, structs) = bundle::expand_port(&def, &element, &env, self.file)?;
+                    handshakes.extend(handshake_refs(&element.name, &refs));
                     bundle_of.extend(refs);
                     struct_of.extend(structs);
                     ports.extend(expanded);
@@ -549,6 +573,7 @@ impl<'a> Design<'a> {
             }
             if let Some(def) = self.globals.bundle_def(&p.dtype.name).cloned() {
                 let (expanded, refs, structs) = bundle::expand_port(&def, p, &env, self.file)?;
+                handshakes.extend(handshake_refs(&p.name, &refs));
                 bundle_of.extend(refs);
                 struct_of.extend(structs);
                 ports.extend(expanded);
@@ -712,7 +737,7 @@ impl<'a> Design<'a> {
             }
         }
         // the valid/ready checks of the handshake ports
-        let checks: Vec<String> = m
+        let bundle_ports: Vec<(String, env::BundleRef)> = m
             .ports
             .iter()
             .flat_map(|p| {
@@ -723,6 +748,11 @@ impl<'a> Design<'a> {
                 };
                 names.into_iter().filter_map(|n| env.bundle_of(&n).map(|b| (n.clone(), b.clone()))).collect::<Vec<_>>()
             })
+            .collect();
+        // the rule of the clock-domain check: a producer's valid must not depend on its ready (see `domains`)
+        self.handshakes.insert(name.to_string(), handshakes);
+        let checks: Vec<String> = bundle_ports
+            .into_iter()
             .flat_map(|(port, b)| {
                 let fields: Vec<String> = b.fields.iter().map(|(f, _)| f.clone()).collect();
                 bundle::handshake_checks(&m.name, &port, b.role, &fields, self.asserts)
@@ -1014,6 +1044,7 @@ impl<'a> Design<'a> {
                     out.push(at(ItemKind::Stage { name: format!("{name}{suffix}"), items: elaborated }));
                 }
                 ItemKind::Comment(text) => out.push(at(ItemKind::Comment(text.clone()))),
+                ItemKind::SameDomain(names) => out.push(at(ItemKind::SameDomain(names.clone()))),
                 // expanded by the parser at each call
                 ItemKind::Proc { .. } => {}
                 // a memory map: no hardware of its own; its devices are read as constants (`io.UART`, `io.count`)

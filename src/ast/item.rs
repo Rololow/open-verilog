@@ -130,6 +130,8 @@ pub enum ItemKind {
     Ctrl { kind: String, cond: Expr },
     /// `initial` block (simulation only): its statements run once at the start.
     Initial(Stmt),
+    /// `same_domain a, b;`: the clocks of the names are synchronous (the same source), so a value may cross between them.
+    SameDomain(Vec<String>),
     /// A comment in the output.
     Comment(String),
     /// Lines copied verbatim (the checks of a pipeline).

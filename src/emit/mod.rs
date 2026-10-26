@@ -112,6 +112,10 @@ impl Emitter {
                 self.line(&format!("// {text}"));
                 Ok(())
             }
+            ItemKind::SameDomain(names) => {
+                self.line(&format!("// same clock domain: {}", names.join(", ")));
+                Ok(())
+            }
             ItemKind::Raw(lines) => {
                 for line in lines {
                     self.line(line);

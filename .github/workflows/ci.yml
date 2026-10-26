@@ -22,3 +22,13 @@ jobs:
         run: cargo test
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        run: cargo build --release
+      - name: check the wiki pages (links and ov blocks)
+        run: python3 scripts/check_wiki.py target/release/ovc

@@ -1,0 +1,36 @@
+# Copies the pages of wiki/ to the GitHub wiki of the repository, after a change to them on main.
+# The wiki must exist first: enable it in the repository settings and create one page in the browser.
+name: wiki
+
+on:
+  push:
+    branches: [main]
+    paths: ["wiki/**", ".github/workflows/wiki.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source
+      - name: clone the wiki
+        run: git clone "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.wiki.git" wiki
+      - name: copy the pages
+        run: cp source/wiki/*.md wiki/
+      - name: publish
+        working-directory: wiki
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "the wiki is up to date"
+            exit 0
+          fi
+          git commit -m "Sync wiki from ${GITHUB_SHA::7}"
+          git push
