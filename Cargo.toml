@@ -1,7 +1,7 @@
 [package]
 license = "MIT"
 name = "ovc"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 description = "Compiler for Open Verilog (.ov), a SystemVerilog extension, to plain SystemVerilog"
 keywords = ["hdl", "systemverilog", "compiler", "rtl"]

@@ -25,6 +25,7 @@ synthesis tool reads it.
 - [Systolic array](Systolic-Array): a larger design, with input skew.
 - [Pipelines](Pipelines): a three-stage multiply-add, before and after.
 - [Command line](Command-Line): the options of `ovc`.
+- [SystemVerilog in .ov, and lint](SystemVerilog-Compatibility): which plain SV constructs compile, and the state of lint.
 - [Status](Status): what compiles, the checks, what is missing.
 - [Contributing](Contributing): tests, continuous integration, releases, this wiki.
 

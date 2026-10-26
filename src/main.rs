@@ -95,7 +95,13 @@ fn collect(paths: &[String]) -> Result<Vec<PathBuf>, String> {
 }
 
 fn main() -> ExitCode {
-    let args = match parse_args(std::env::args().skip(1).collect()) {
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // `ovc lint ...`: the checks of plain SystemVerilog files (see `lint`)
+    if argv.first().map(String::as_str) == Some("lint") {
+        let code = ovc::lint::main(&argv[1..]);
+        return ExitCode::from(u8::try_from(code).unwrap_or(2));
+    }
+    let args = match parse_args(argv) {
         Ok(a) => a,
         Err(msg) => {
             if !msg.is_empty() {

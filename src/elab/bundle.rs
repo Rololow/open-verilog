@@ -352,14 +352,25 @@ pub fn handshake_checks(module: &str, port: &str, role: Dir, fields: &[String], 
     let held_msg = format!(
         "{module}: {port} offered a value and {who} before it was accepted (valid must stay high, with stable data, until ready)"
     );
-    let trap = "`ifdef OVC_TESTS ->ovc_tests.ovc_check_failed; `endif";
-    vec![
+    // each directive starts its own line: the lint reads them as the preprocessor does
+    let failed = |msg: String| {
+        vec![
+            "  else begin".to_string(),
+            format!("    $error(\"{msg}\");"),
+            "`ifdef OVC_TESTS".to_string(),
+            "    ->ovc_tests.ovc_check_failed;".to_string(),
+            "`endif".to_string(),
+            "  end".to_string(),
+        ]
+    };
+    let mut out = vec![
         "`ifndef SYNTHESIS".to_string(),
         "// ovc: valid/ready protocol checks".to_string(),
         format!("ov_hs_{port}_held: assert property (@(posedge clk) disable iff (rst) {port}_valid && !{port}_ready |=> {port}_valid{stable})"),
-        format!("  else begin $error(\"{held_msg}\"); {trap} end"),
-        format!("ov_hs_{port}_known: assert property (@(posedge clk) disable iff (rst) !$isunknown({port}_valid))"),
-        format!("  else begin $error(\"{module}: {port} valid is X\"); {trap} end"),
-        "`endif".to_string(),
-    ]
+    ];
+    out.extend(failed(held_msg));
+    out.push(format!("ov_hs_{port}_known: assert property (@(posedge clk) disable iff (rst) !$isunknown({port}_valid))"));
+    out.extend(failed(format!("{module}: {port} valid is X")));
+    out.push("`endif".to_string());
+    out
 }

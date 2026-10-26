@@ -59,14 +59,31 @@ pub struct Summary {
 
 /// Checks every module (children before parents) and returns the warnings, or the first error.
 pub fn check(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>) -> Result<Vec<String>> {
+    let (warnings, errors) = check_all(modules, handshakes);
+    match errors.into_iter().next() {
+        Some(first) => Err(first),
+        None => Ok(warnings),
+    }
+}
+
+/// Every error and every warning of the check, not only the first error: a module with an error is left out (its
+/// summary is empty), and the modules after it are checked as before. `lint` reports all of them.
+pub fn check_all(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>) -> (Vec<String>, Vec<Error>) {
     let mut summaries: HashMap<String, Summary> = HashMap::new();
     let mut warnings: Vec<String> = Vec::new();
+    let mut errors: Vec<Error> = Vec::new();
     for m in modules {
         let empty = Vec::new();
-        let summary = check_module(m, handshakes.get(&m.name).unwrap_or(&empty), &summaries, &mut warnings)?;
+        let summary = match check_module(m, handshakes.get(&m.name).unwrap_or(&empty), &summaries, &mut warnings) {
+            Ok(summary) => summary,
+            Err(e) => {
+                errors.push(e);
+                Summary::default()
+            }
+        };
         summaries.insert(m.name.clone(), summary);
     }
-    Ok(warnings)
+    (warnings, errors)
 }
 
 fn token_name(t: &Tok) -> String {

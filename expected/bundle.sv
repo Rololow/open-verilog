@@ -20,9 +20,19 @@ module Source (
   `ifndef SYNTHESIS
   // ovc: valid/ready protocol checks
   ov_hs_out_held: assert property (@(posedge clk) disable iff (rst) out_valid && !out_ready |=> out_valid && $stable(out_data))
-    else begin $error("Source: out offered a value and it withdrew or changed it before it was accepted (valid must stay high, with stable data, until ready)"); `ifdef OVC_TESTS ->ovc_tests.ovc_check_failed; `endif end
+    else begin
+      $error("Source: out offered a value and it withdrew or changed it before it was accepted (valid must stay high, with stable data, until ready)");
+  `ifdef OVC_TESTS
+      ->ovc_tests.ovc_check_failed;
+  `endif
+    end
   ov_hs_out_known: assert property (@(posedge clk) disable iff (rst) !$isunknown(out_valid))
-    else begin $error("Source: out valid is X"); `ifdef OVC_TESTS ->ovc_tests.ovc_check_failed; `endif end
+    else begin
+      $error("Source: out valid is X");
+  `ifdef OVC_TESTS
+      ->ovc_tests.ovc_check_failed;
+  `endif
+    end
   `endif
 endmodule
 
@@ -42,9 +52,19 @@ module Sink (
   `ifndef SYNTHESIS
   // ovc: valid/ready protocol checks
   ov_hs_in_held: assert property (@(posedge clk) disable iff (rst) in_valid && !in_ready |=> in_valid && $stable(in_data))
-    else begin $error("Sink: in offered a value and the producer connected to it withdrew or changed it before it was accepted (valid must stay high, with stable data, until ready)"); `ifdef OVC_TESTS ->ovc_tests.ovc_check_failed; `endif end
+    else begin
+      $error("Sink: in offered a value and the producer connected to it withdrew or changed it before it was accepted (valid must stay high, with stable data, until ready)");
+  `ifdef OVC_TESTS
+      ->ovc_tests.ovc_check_failed;
+  `endif
+    end
   ov_hs_in_known: assert property (@(posedge clk) disable iff (rst) !$isunknown(in_valid))
-    else begin $error("Sink: in valid is X"); `ifdef OVC_TESTS ->ovc_tests.ovc_check_failed; `endif end
+    else begin
+      $error("Sink: in valid is X");
+  `ifdef OVC_TESTS
+      ->ovc_tests.ovc_check_failed;
+  `endif
+    end
   `endif
 endmodule
 

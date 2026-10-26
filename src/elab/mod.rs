@@ -3,10 +3,10 @@
 //! no generate constructs and only constant dimensions.
 
 pub mod env;
-mod fold;
+pub(crate) mod fold;
 mod fsm;
 mod types;
-mod width;
+pub(crate) mod width;
 mod bundle;
 mod vecmerge;
 mod scope;
@@ -238,7 +238,7 @@ pub(crate) fn stmt_any_expr(s: &Stmt, pred: &dyn Fn(&Expr) -> bool) -> bool {
 }
 
 /// Whether some sub-expression of `e` (itself included) satisfies `pred`.
-fn expr_any(e: &Expr, pred: &dyn Fn(&Expr) -> bool) -> bool {
+pub(crate) fn expr_any(e: &Expr, pred: &dyn Fn(&Expr) -> bool) -> bool {
     if pred(e) {
         return true;
     }

@@ -4,6 +4,7 @@
 //! (modules refer to each other across files), and emitted per origin file.
 
 pub mod ast;
+pub mod checks;
 pub mod domains;
 pub mod elab;
 pub mod emit;
@@ -13,6 +14,8 @@ pub mod library;
 pub mod lexer;
 pub mod parser;
 pub mod pipeline;
+pub mod preproc;
+pub mod lint;
 pub mod probes;
 pub mod outputs;
 pub mod regmap;
@@ -80,6 +83,23 @@ pub fn compile_units(units: &[(String, String)], options: &Options) -> Result<Co
 }
 
 /// Compiles parsed units (the driver parses them in parallel, one thread per file).
+/// The checks of `ovc lint` on parsed units: the warnings of the elaboration and of the clock-domain check, and every
+/// error of the domain check (the design is not emitted). An error of the elaboration itself stops the lint.
+pub fn lint_parsed(parsed: Vec<File>, top: Option<&ast::DType>) -> Result<(Vec<String>, Vec<Error>)> {
+    let mut source = File::default();
+    for unit in parsed {
+        merge(&mut source, unit)?;
+    }
+    library::merge(&mut source)?;
+    let elab::Elaborated { mut modules, warnings, handshakes, envs, .. } = elab::elaborate(&source, "<lint>", false, top)?;
+    hier::thread(&mut modules, "<lint>")?;
+    let (domain_warnings, errors) = domains::check_all(&modules, &handshakes);
+    let mut all = warnings;
+    all.extend(domain_warnings);
+    all.extend(checks::check(&modules, &envs));
+    Ok((all, errors))
+}
+
 pub fn compile_parsed(parsed: Vec<File>, options: &Options) -> Result<Compiled> {
     let mut source = File::default();
     for unit in parsed {
