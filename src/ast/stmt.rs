@@ -7,11 +7,13 @@ pub enum Stmt {
     /// `val name = expr;` in a block: a name for a value, substituted into the statements after it (no hardware).
     Val(String, Expr),
     /// `lhs = rhs` (blocking) or `lhs <= rhs` (non-blocking).
-    Assign { lhs: Expr, rhs: Expr, nonblocking: bool },
+    /// The position is the first token of the target.
+    Assign { lhs: Expr, rhs: Expr, nonblocking: bool, pos: Pos },
     If { cond: Expr, then: Box<Stmt>, els: Option<Box<Stmt>> },
     For { header: ForHeader, body: Box<Stmt> },
     /// `kind` is `case`, `casez` or `casex`; `None` labels the `default` arm.
-    Case { subject: Expr, kind: String, arms: Vec<(Option<Vec<Expr>>, Stmt)> },
+    /// The position is the `case` keyword.
+    Case { subject: Expr, kind: String, arms: Vec<(Option<Vec<Expr>>, Stmt)>, pos: Pos },
     Decl(Decl),
     Return(Expr),
     /// `goto State;` inside an fsm: the next state.

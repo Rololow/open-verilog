@@ -535,7 +535,8 @@ fn in_set_lowered(x: &Expr, set: &[crate::ast::SetItem], env: &Env) -> Expr {
             Some(hi) => {
                 let hi = fold_expr(hi, env);
                 let above = Expr::Binary(">=".into(), boxed(x.clone()), boxed(lo), (0, 0));
-                let below = Expr::Binary("<=".into(), boxed(x.clone()), boxed(hi), (0, 0));
+                // `lo..hi` excludes `hi`, as in the spec (and as in `for i in lo..hi`)
+                let below = Expr::Binary("<".into(), boxed(x.clone()), boxed(hi), (0, 0));
                 Expr::Binary("&&".into(), boxed(above), boxed(below), (0, 0))
             }
         }
@@ -771,9 +772,9 @@ fn list_method(base: &Expr, method: &str, args: &[Expr], env: &Env, pos: Pos) ->
                     kind: ItemKind::Decl(Decl { dtype: dtype.clone(), decls: vec![Declarator { name: reg(j), dims: Vec::new(), init: None }], is_const: false, is_async: false }),
                 });
             }
-            let mut stmts = vec![Stmt::Assign { lhs: Expr::Ident(reg(1), pos), rhs: base.clone(), nonblocking: true }];
+            let mut stmts = vec![Stmt::Assign { lhs: Expr::Ident(reg(1), pos), rhs: base.clone(), nonblocking: true, pos }];
             for j in 2..=k {
-                stmts.push(Stmt::Assign { lhs: Expr::Ident(reg(j), pos), rhs: Expr::Ident(reg(j - 1), pos), nonblocking: true });
+                stmts.push(Stmt::Assign { lhs: Expr::Ident(reg(j), pos), rhs: Expr::Ident(reg(j - 1), pos), nonblocking: true, pos });
             }
             env.push_delay_block(Item {
                 pos,
@@ -1024,7 +1025,7 @@ pub fn fold_arg(arg: &Arg, env: &Env) -> Arg {
 pub fn fold_stmt(s: &Stmt, env: &Env) -> Stmt {
     match s {
         Stmt::Block(stmts) => Stmt::Block(fold_block(stmts, env)),
-        Stmt::Assign { lhs, rhs, nonblocking } => Stmt::Assign { lhs: fold_expr(lhs, env), rhs: fold_expr(rhs, env), nonblocking: *nonblocking },
+        Stmt::Assign { lhs, rhs, nonblocking, pos } => Stmt::Assign { lhs: fold_expr(lhs, env), rhs: fold_expr(rhs, env), nonblocking: *nonblocking, pos: *pos },
         Stmt::If { cond, then, els } => {
             // a constant condition keeps its branch only (the other one is not in the design)
             let cond = fold_expr(cond, env);
@@ -1053,14 +1054,17 @@ pub fn fold_stmt(s: &Stmt, env: &Env) -> Stmt {
             inner.unbind(&header.var);
             Stmt::For { header, body: boxed_stmt(body, &inner) }
         }
-        Stmt::Case { subject, kind, arms } => Stmt::Case {
-            subject: fold_expr(subject, env),
-            kind: kind.clone(),
-            arms: arms
+        Stmt::Case { subject, kind, arms, pos } => {
+            let subject = fold_expr(subject, env);
+            let arms: Vec<(Option<Vec<Expr>>, Stmt)> = arms
                 .iter()
                 .map(|(labels, body)| (labels.as_ref().map(|ls| ls.iter().map(|l| fold_expr(l, env)).collect()), fold_stmt(body, env)))
-                .collect(),
-        },
+                .collect();
+            if env.cover_on() && int_of(&subject).is_none() {
+                cover_case(&subject, &arms, *pos, env);
+            }
+            Stmt::Case { subject, kind: kind.clone(), arms, pos: *pos }
+        }
         Stmt::Val(name, e) => Stmt::Val(name.clone(), fold_expr(e, env)),
         Stmt::Decl(d) => Stmt::Decl(crate::ast::Decl {
             dtype: fold_dtype(&d.dtype, env),
@@ -1129,6 +1133,51 @@ fn fold_block(stmts: &[Stmt], env: &Env) -> Vec<Stmt> {
         }
     }
     out
+}
+
+/// The coverage items (`--cover`) of a case on a hardware value: each arm taken (its condition and no earlier arm's),
+/// the default arm, and for a case on an enum, each state that only the default arm handles.
+fn cover_case(subject: &Expr, arms: &[(Option<Vec<Expr>>, Stmt)], pos: Pos, env: &Env) {
+    let at = format!("{}:{}", env.cover_file(), pos.0);
+    let and = |a: Option<Expr>, b: Expr| match a {
+        Some(a) => Expr::Binary("&&".into(), boxed(a), boxed(b), pos),
+        None => b,
+    };
+    // `None` while no earlier arm can have been taken: the condition is then true
+    let mut none: Option<Expr> = None;
+    let mut enum_seen: Option<String> = None;
+    let mut named: Vec<String> = Vec::new();
+    for (labels, _) in arms {
+        let Some(labels) = labels else { continue };
+        let text: Vec<String> = labels.iter().map(|l| crate::emit::expr::expr(l, -1, false).unwrap_or_default()).collect();
+        let Some(c) = labels.iter().map(|l| Expr::Binary("==".into(), boxed(subject.clone()), boxed(l.clone()), pos)).reduce(|a, b| Expr::Binary("||".into(), boxed(a), boxed(b), pos)) else { continue };
+        env.add_cover(format!("{at} case arm {}", text.join(", ")), and(none.clone(), c.clone()));
+        none = Some(and(none.take(), Expr::Unary("!".into(), boxed(c))));
+        for l in labels {
+            if let Expr::Ident(n, _) = l {
+                if let Some((e, m)) = n.rsplit_once('_') {
+                    if env.enum_info(e).is_some() {
+                        enum_seen.get_or_insert_with(|| e.to_string());
+                        if enum_seen.as_deref() == Some(e) {
+                            named.push(m.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let Some(rest) = none else { return };
+    let enum_info = enum_seen.as_deref().and_then(|e| env.enum_info(e).map(|i| (e.to_string(), i.members.clone())));
+    let complete = enum_info.as_ref().is_some_and(|(_, ms)| ms.iter().all(|(m, _)| named.contains(m)));
+    if !complete {
+        env.add_cover(format!("{at} case arm default"), rest.clone());
+    }
+    if let Some((e, members)) = enum_info {
+        for (m, _) in members.iter().filter(|(m, _)| !named.contains(m)) {
+            let state = Expr::Binary("==".into(), boxed(subject.clone()), boxed(Expr::Ident(format!("{e}_{m}"), pos)), pos);
+            env.add_cover(format!("{at} case value {e}.{m} (default arm)"), and(Some(rest.clone()), state));
+        }
+    }
 }
 
 /// A loop that is a priority select: its body is `if (c) { v = e; }` with no `else`, so the last true iteration wins.

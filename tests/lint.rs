@@ -136,3 +136,20 @@ fn assignment_style_in_the_wrong_block_is_reported() {
     let found = categories_of("style", "module s(input logic clk, input logic d, output logic p);\n  always_comb begin\n    p <= d;\n  end\nendmodule\n");
     assert!(found.iter().any(|(c, m)| c == "process" && m.contains("non-blocking assignment (<=) inside always_comb")), "{found:?}");
 }
+
+#[test]
+fn an_error_in_one_module_does_not_hide_the_findings_of_the_others() {
+    let dir = scratch("isolation");
+    let good = dir.join("good.sv");
+    let bad = dir.join("bad.sv");
+    fs::write(&good, "module good(input logic en, input logic d, output logic q);\n  always_comb begin\n    if (en) q = d;\n  end\nendmodule\n").unwrap();
+    fs::write(&bad, "module bad(input logic a, output logic y);\n  assign y = b;\nendmodule\n").unwrap();
+    let opts = Options {
+        files: vec![good.to_string_lossy().into_owned(), bad.to_string_lossy().into_owned()],
+        ..Options::default()
+    };
+    let report = lint::run(&opts);
+    assert!(report.findings.iter().any(|f| f.category == "latch"), "{:?}", report.findings);
+    assert_eq!(report.skipped.len(), 1, "{:?}", report.skipped);
+    assert!(report.skipped[0].message.contains("unknown identifier 'b'"));
+}

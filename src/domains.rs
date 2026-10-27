@@ -478,7 +478,7 @@ fn check_module(
         match &it.kind {
             ItemKind::ContAssign { lhs, rhs } => {
                 let mut out = Vec::new();
-                assignments(&Stmt::Assign { lhs: lhs.clone(), rhs: rhs.clone(), nonblocking: false }, &BTreeSet::new(), &mut out);
+                assignments(&Stmt::Assign { lhs: lhs.clone(), rhs: rhs.clone(), nonblocking: false, pos: (0, 0) }, &BTreeSet::new(), &mut out);
                 comb.extend(out);
             }
             ItemKind::Decl(d) => {

@@ -104,25 +104,26 @@ impl Parser {
 
     /// `lhs = rhs;`, `lhs <= rhs;`, `lhs op= rhs;`, `lhs++;`, or a call statement.
     fn parse_simple_stmt(&mut self) -> Result<Stmt> {
+        let start = (self.tok().line, self.tok().col);
         let lhs = self.parse_postfix()?;
         if self.accept(";") {
             return Ok(Stmt::ExprStmt(lhs));
         }
         let (line, col) = (self.tok().line, self.tok().col);
         let stmt = if self.accept("<=") {
-            Stmt::Assign { rhs: self.parse_expr(0)?, lhs, nonblocking: true }
+            Stmt::Assign { rhs: self.parse_expr(0)?, lhs, nonblocking: true, pos: start }
         } else if self.accept("=") {
-            Stmt::Assign { rhs: self.parse_expr(0)?, lhs, nonblocking: false }
+            Stmt::Assign { rhs: self.parse_expr(0)?, lhs, nonblocking: false, pos: start }
         } else if let Some((_, op)) = ASSIGN_OPS.iter().find(|(text, _)| self.at(text)) {
             let op = op.to_string();
             self.i += 1;
             let rhs = Expr::Binary(op, Box::new(lhs.clone()), Box::new(self.parse_expr(0)?), (line, col));
-            Stmt::Assign { lhs, rhs, nonblocking: self.in_ff }
+            Stmt::Assign { lhs, rhs, nonblocking: self.in_ff, pos: start }
         } else if self.at("++") || self.at("--") {
             let op = if self.at("++") { "+" } else { "-" };
             self.i += 1;
             let rhs = Expr::Binary(op.into(), Box::new(lhs.clone()), Box::new(Expr::Num("1".into())), (line, col));
-            Stmt::Assign { lhs, rhs, nonblocking: self.in_ff }
+            Stmt::Assign { lhs, rhs, nonblocking: self.in_ff, pos: start }
         } else {
             return Err(self.fail(format!("'=' or '<=' expected, found '{}'", self.found())));
         };
@@ -149,6 +150,7 @@ impl Parser {
     }
 
     fn parse_case(&mut self) -> Result<Stmt> {
+        let pos = (self.tok().line, self.tok().col);
         let kind = self.ident()?;
         self.expect("(")?;
         let subject = self.parse_expr(0)?;
@@ -172,7 +174,7 @@ impl Parser {
             arms.push((labels, self.parse_stmt()?));
         }
         self.expect(closer)?;
-        Ok(Stmt::Case { subject, kind, arms })
+        Ok(Stmt::Case { subject, kind, arms, pos })
     }
 
     /// `for (int i = lo; i <cmp> bound; i++ | i += k | i = i + k)` or `for i in range`.

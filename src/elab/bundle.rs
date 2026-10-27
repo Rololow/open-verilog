@@ -312,6 +312,12 @@ pub fn expand_conns(target: Option<&crate::ast::Module>, spec: Option<&crate::as
         let Some(prefixes) = bundle_prefixes(expr, env) else {
             return Err(fail(format!("the bundle port '{pname}' needs a bundle signal to connect to")));
         };
+        // a master port drives its bundle: a slave bundle of the parent cannot be the one it drives
+        if let Expr::Ident(signal, _) = expr {
+            if port.dir == Dir::Master && env.bundle_of(signal).is_some_and(|b| b.role == Dir::Slave) {
+                return Err(fail(format!("'{pname}' is a master bundle but is connected to a slave bundle port: '{signal}'")));
+            }
+        }
         // the signals of a bundle, the nested bundles flattened: `valid`, `aw_valid`, ... (the source's own layout)
         let _ = &def;
         if is_vec {

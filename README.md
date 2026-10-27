@@ -67,7 +67,6 @@ before replacing the Python compiler with this one.
 ### Not yet implemented
 
 - `ovc lint` and `ovc cover` of the reference: the Rust CLI does not have these subcommands yet.
-- Asynchronous pipeline resets (`reset NAME async;`): pipelines are reset synchronously.
 
 Anything not supported is reported with a positioned error, not silently dropped.
 

@@ -154,7 +154,7 @@ pub struct Carried {
 
 /// The register boundaries: for each stage after the first, the valid bit and the carried values move forward.
 /// A stall freezes them, a kill clears the valid bit, reset clears it too.
-pub fn boundaries(plan: &Plan, names: &[&str], valid: &[String], carried: &[Carried], clock: &str, rst: Expr, pos: Pos) -> Vec<Item> {
+pub fn boundaries(plan: &Plan, names: &[&str], valid: &[String], carried: &[Carried], edges: &[(String, Expr)], rst: Expr, pos: Pos) -> Vec<Item> {
     let n = names.len();
     let mut out = Vec::new();
     for j in 1..n {
@@ -195,7 +195,7 @@ pub fn boundaries(plan: &Plan, names: &[&str], valid: &[String], carried: &[Carr
         out.push(Item {
             pos,
             kind: ItemKind::Always {
-                sens: Sens::Edges(vec![("posedge".into(), ident(clock, pos))]),
+                sens: Sens::Edges(edges.to_vec()),
                 body: Stmt::Block(body),
                 keyword: "always_ff".into(),
             },
@@ -205,9 +205,9 @@ pub fn boundaries(plan: &Plan, names: &[&str], valid: &[String], carried: &[Carr
 }
 
 fn nonblocking(lhs: &str, rhs: Expr, pos: Pos) -> Stmt {
-    Stmt::Assign { lhs: ident(lhs, pos), rhs, nonblocking: true }
+    Stmt::Assign { lhs: ident(lhs, pos), rhs, nonblocking: true, pos }
 }
 
 fn nonblocking_num(lhs: &str, rhs: &str, pos: Pos) -> Stmt {
-    Stmt::Assign { lhs: ident(lhs, pos), rhs: Expr::Num(rhs.into()), nonblocking: true }
+    Stmt::Assign { lhs: ident(lhs, pos), rhs: Expr::Num(rhs.into()), nonblocking: true, pos }
 }

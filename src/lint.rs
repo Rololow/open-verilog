@@ -14,6 +14,23 @@ use crate::preproc::Preprocessor;
 pub const USAGE: &str = "usage: ovc lint FILE.sv... [-f FILES.f] [+incdir+DIR] [-DNAME[=VALUE]] [--top NAME]
                 [--only CAT,...] [--ignore CAT,...] [--werror]";
 
+/// The advice of a message for plain SystemVerilog: the remedies of `.ov` (`.wrap()`, `val`) are SV ones here.
+fn sv_advice(msg: &str) -> String {
+    let mut m = msg.replace("(use .wrap() or a slice to truncate on purpose)", "(slice it or use a size cast, e.g. 32'(...), to truncate on purpose)");
+    m = m.replace("or use .wrap() to truncate on purpose", "or use a size cast to truncate on purpose");
+    m = m.replace("bind it with `val` first", "assign it to a wider signal first");
+    if let Some(i) = m.find("Pass it through a synchronizer") {
+        if let Some(j) = m[i..].find("`same_domain") {
+            let from = i + j + 1;
+            if let Some(k) = m[from..].find('`') {
+                let end = from + k + 1;
+                m.replace_range(i..end, "Pass it through a synchronizer (two flip-flops, a handshake, an asynchronous FIFO), or add `// ovc: ignore cdc` where it is safe");
+            }
+        }
+    }
+    m.replace("Declare it `input async` and synchronize it, or split it", "Synchronize it, or split it")
+}
+
 /// The categories of a finding, with the messages each one takes (the first category that matches is the one).
 fn category(msg: &str) -> &'static str {
     let has = |s: &str| msg.contains(s);
@@ -203,17 +220,21 @@ pub fn run(opts: &Options) -> Report {
             let (file, line) = origins.locate(&e.file, e.line);
             skip(&mut report, &file, line, e.col, e.message);
         }
-        Ok((warnings, errors)) => {
+        Ok(out) => {
+            for e in out.skipped {
+                let (file, line) = origins.locate(&e.file, e.line);
+                skip(&mut report, &file, line, e.col, e.message);
+            }
             let mut push = |file: &str, line: usize, col: usize, message: String| {
                 let (file, line) = origins.locate(file, line);
                 report.findings.push(Finding { category: category(&message), file, line, col, message });
             };
-            for w in warnings {
+            for w in out.warnings {
                 if let Some((file, line, col, message)) = parse_warning(&w) {
                     push(&file, line, col, message);
                 }
             }
-            for e in errors {
+            for e in out.errors {
                 push(&e.file, e.line, e.col, e.message);
             }
         }
@@ -265,7 +286,8 @@ pub fn main(args: &[String]) -> i32 {
     let report = run(&opts);
     let mut sources = HashMap::new();
     let mut kept: Vec<Finding> = Vec::new();
-    for f in report.findings {
+    for mut f in report.findings {
+        f.message = sv_advice(&f.message);
         let wanted = (opts.only.is_empty() || opts.only.iter().any(|c| c == f.category)) && !opts.ignore.iter().any(|c| c == f.category);
         if wanted && !silenced(&f, &mut sources) && !kept.iter().any(|k| k.message == f.message && k.file == f.file && k.line == f.line) {
             kept.push(f);

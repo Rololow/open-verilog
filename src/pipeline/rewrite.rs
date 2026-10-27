@@ -79,7 +79,7 @@ fn map_set(set: &[SetItem], f: &mut Resolver) -> Result<Vec<SetItem>, Failure> {
 pub fn map_stmt(s: &Stmt, f: &mut Resolver) -> Result<Stmt, Failure> {
     Ok(match s {
         Stmt::Block(stmts) => Stmt::Block(stmts.iter().map(|x| map_stmt(x, f)).collect::<Result<_, _>>()?),
-        Stmt::Assign { lhs, rhs, nonblocking } => Stmt::Assign { lhs: map_expr(lhs, f)?, rhs: map_expr(rhs, f)?, nonblocking: *nonblocking },
+        Stmt::Assign { lhs, rhs, nonblocking, pos } => Stmt::Assign { lhs: map_expr(lhs, f)?, rhs: map_expr(rhs, f)?, nonblocking: *nonblocking, pos: *pos },
         Stmt::If { cond, then, els } => Stmt::If {
             cond: map_expr(cond, f)?,
             then: Box::new(map_stmt(then, f)?),
@@ -89,7 +89,7 @@ pub fn map_stmt(s: &Stmt, f: &mut Resolver) -> Result<Stmt, Failure> {
             },
         },
         Stmt::For { header, body } => Stmt::For { header: map_header(header, f)?, body: Box::new(map_stmt(body, f)?) },
-        Stmt::Case { subject, kind, arms } => {
+        Stmt::Case { subject, kind, arms, pos } => {
             let mut out = Vec::with_capacity(arms.len());
             for (labels, body) in arms {
                 let labels = match labels {
@@ -98,7 +98,7 @@ pub fn map_stmt(s: &Stmt, f: &mut Resolver) -> Result<Stmt, Failure> {
                 };
                 out.push((labels, map_stmt(body, f)?));
             }
-            Stmt::Case { subject: map_expr(subject, f)?, kind: kind.clone(), arms: out }
+            Stmt::Case { subject: map_expr(subject, f)?, kind: kind.clone(), arms: out, pos: *pos }
         }
         Stmt::Decl(d) => Stmt::Decl(d.clone()),
         Stmt::Val(name, e) => Stmt::Val(name.clone(), map_expr(e, f)?),

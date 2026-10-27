@@ -21,4 +21,3 @@ still the reference, for example the clock-domain checks and the instruction-set
 ## Not implemented
 
 - `lint` and `cover` subcommands.
-- Asynchronous pipeline resets (`reset NAME async;`): pipelines are reset synchronously.

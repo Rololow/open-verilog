@@ -264,6 +264,23 @@ fn stmt_exprs_symbolic(s: &Stmt, vars: &[String]) -> bool {
     !stmt_any_expr(s, &|x| value_method(x) || variable_range(x, vars))
 }
 
+/// `M m(.*)`: the connections of `.*` written out, in the order of the module's ports, for each port that has no
+/// connection of its own and a signal of the same name in scope. The other connections keep their place.
+fn expand_star(conns: Vec<Conn>, target: &Module, env: &Env) -> Vec<Conn> {
+    if !conns.iter().any(|c| c.port.as_deref() == Some("*")) {
+        return conns;
+    }
+    let explicit: Vec<Conn> = conns.into_iter().filter(|c| c.port.as_deref() != Some("*")).collect();
+    let named: HashSet<String> = explicit.iter().filter_map(|c| c.port.clone()).collect();
+    let mut out = explicit;
+    for p in &target.ports {
+        if !named.contains(&p.name) && env.signal(&p.name).is_some() {
+            out.push(Conn { port: Some(p.name.clone()), expr: Some(Expr::Ident(p.name.clone(), (0, 0))) });
+        }
+    }
+    out
+}
+
 /// The names a source uses: every identifier and every member name (the Debug text of the tree, where each one is a string
 /// followed by its position).
 fn names_in_source(source: &File) -> HashSet<String> {
@@ -278,6 +295,29 @@ fn names_in_source(source: &File) -> HashSet<String> {
         from = at + 1;
     }
     names
+}
+
+/// The coverage block of a module: one flag per item, set in a clocked block, and printed by a `final` block. Empty when
+/// the module has no item.
+fn coverage_lines(_env: &Env, items: Vec<(String, Expr)>, clocked: bool) -> Option<Vec<String>> {
+    if items.is_empty() {
+        return None;
+    }
+    let mut lines = vec!["`ifdef OVC_COVER".to_string(), "// ovc: coverage (case arms, states)".to_string()];
+    lines.extend((0..items.len()).map(|i| format!("logic ov_cov_{i} = 1'b0;")));
+    lines.push(if clocked { "always @(posedge clk) begin".into() } else { "always @* begin".into() });
+    for (i, (_, cond)) in items.iter().enumerate() {
+        let text = crate::emit::expr::expr(cond, -1, false).unwrap_or_default();
+        lines.push(format!("  if ({text}) ov_cov_{i} = 1'b1;"));
+    }
+    lines.push("end".into());
+    lines.push("final begin".into());
+    for (i, (key, _)) in items.iter().enumerate() {
+        lines.push(format!("  $display(\"ovc-cover %0d {}\", ov_cov_{i});", key.replace('"', "'")));
+    }
+    lines.push("end".into());
+    lines.push("`endif".into());
+    Some(lines)
 }
 
 /// The handshake bundles among the references of a port: those with valid and ready fields, not a monitor. Each one is
@@ -318,6 +358,22 @@ fn merge_extends(source: &File, file: &str) -> Result<Vec<Module>> {
                 _ => None,
             })
             .collect();
+        // an override must replace a function of the base: one that replaces nothing is a mistake
+        let base_fns: Vec<&str> = base
+            .items
+            .iter()
+            .filter_map(|it| match &it.kind {
+                ItemKind::Fn { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        for it in &m.items {
+            if let ItemKind::Fn { name, override_at: Some(at), .. } = &it.kind {
+                if !base_fns.contains(&name.as_str()) {
+                    return Err(Error::new(format!("'{name}' does not override anything"), file, at.0, at.1));
+                }
+            }
+        }
         // an override replaces the base's function of the same name
         let mut items: Vec<Item> = base
             .items
@@ -355,7 +411,7 @@ fn merge_extends(source: &File, file: &str) -> Result<Vec<Module>> {
 }
 
 /// `top`: the root module with its arguments, when the design has one (the only root then).
-pub fn elaborate(source: &File, file: &str, asserts: bool, top: Option<&DType>) -> Result<Elaborated> {
+pub fn elaborate(source: &File, file: &str, asserts: bool, cover: bool, top: Option<&DType>) -> Result<Elaborated> {
     let merged = merge_extends(source, file)?;
     let modules = &merged;
     let (enums, enum_order) = build_enums(&source.enums, file)?;
@@ -431,6 +487,7 @@ pub fn elaborate(source: &File, file: &str, asserts: bool, top: Option<&DType>) 
         pipelines: Vec::new(),
         warnings: Vec::new(),
         asserts,
+        cover,
         local_count: 0,
         memmaps: Vec::new(),
         envs: HashMap::new(),
@@ -558,6 +615,8 @@ struct Design<'a> {
     pipelines: Vec<String>,
     warnings: Vec<String>,
     asserts: bool,
+    /// `--cover`: the case statements of each module get coverage items.
+    cover: bool,
 }
 
 /// The struct a view names: `x.as(S)` or `x.as(S<args>)`.
@@ -658,8 +717,14 @@ impl<'a> Design<'a> {
         let module = result?;
         let (module, elements) = vecmerge::merge(module, &groups);
         // the checks read the names the module has in the output: after the vectors are merged
+        if let Some(env) = self.envs.get(name) {
+            if let Some((msg, pos)) = member_error(&module, env) {
+                return Err(Error::new(msg, ctx_file(m, self.file), pos.0, pos.1));
+            }
+        }
         if let Some((name, pos)) = unknown_identifier(&module) {
-            return Err(Error::new(format!("unknown identifier '{name}'"), ctx_file(m, self.file), pos.0, pos.1));
+            let hint = suggest(&name, known_names(&module));
+            return Err(Error::new(format!("unknown identifier '{name}'{hint}"), ctx_file(m, self.file), pos.0, pos.1));
         }
         if let Some((port, pos)) = driven_input(&module) {
             return Err(Error::new(format!("input port '{port}' is driven inside the module"), ctx_file(m, self.file), pos.0, pos.1));
@@ -676,6 +741,7 @@ impl<'a> Design<'a> {
             return Err(ctx.err(format!("'{}' is not supported yet", m.kind)));
         }
         let mut env = bind_params(m, overrides, &self.globals, &ctx)?;
+        env.start_cover(self.cover, &m.origin);
         // the enums the module declares shadow the top-level ones of the same name
         let (local, local_order) = build_enums(&m.enums, ctx.file)?;
         let mut table = (*self.enums).clone();
@@ -854,6 +920,10 @@ impl<'a> Design<'a> {
         let mut items = Vec::new();
         self.elab_items(&m.items, &env, &ctx, &[], &mut items)?;
         self.elab_items(&monitor_items, &env, &ctx, &[], &mut items)?;
+        // the coverage of the case statements: sticky flags, printed at the end of the simulation (`ovc cover`)
+        if let Some(lines) = coverage_lines(&env, env.cover_items(), m.ports.iter().any(|p| p.name == "clk")) {
+            items.push(Item { pos: m.pos, kind: ItemKind::Raw(lines) });
+        }
         // the members of the enums this module uses, declared first
         let used = env.used_enums();
         let mut declared = Vec::new();
@@ -933,7 +1003,7 @@ impl<'a> Design<'a> {
             pos: m.pos,
         };
         if m.kind == "pipeline" {
-            let directives = pipeline::directives(m, self.file)?;
+            let directives = pipeline::directives(m)?;
             let lowered = pipeline::lower(&module, self.file, self.asserts, &directives)?;
             self.pipelines.push(lowered.table);
             self.warnings.extend(lowered.warnings);
@@ -1154,6 +1224,11 @@ impl<'a> Design<'a> {
                         .map(|c| Conn { port: c.port.clone(), expr: c.expr.as_ref().map(|e| fold_expr(e, env)) })
                         .collect();
                     let target = self.by_name.get(resolved.module.as_str()).copied();
+                    // `.*` is written out: each port of the module connected to the signal of the same name
+                    let folded = match target {
+                        Some(t) => expand_star(folded, t, env),
+                        None => folded,
+                    };
                     // an external module's connections are kept as they are
                     let conns = match target {
                         Some(_) => {
@@ -1207,12 +1282,13 @@ impl<'a> Design<'a> {
                 ItemKind::Raw(lines) => out.push(at(ItemKind::Raw(lines.clone()))),
                 // functions are inlined at their calls; a function that is called as a method of an instance is
                 // kept until the hierarchy pass gives it ports (then removed)
-                ItemKind::Fn { name, params, ptypes, ret, body } => out.push(at(ItemKind::Fn {
+                ItemKind::Fn { name, params, ptypes, ret, body, override_at } => out.push(at(ItemKind::Fn {
                     name: name.clone(),
                     params: params.clone(),
                     ptypes: ptypes.iter().map(|t| fold_dtype(t, env)).collect(),
                     ret: ret.as_ref().map(|r| fold_dtype(r, env)),
                     body: fold_expr(body, env),
+                    override_at: *override_at,
                 })),
                 ItemKind::Fsm { enum_name, name, init, defaults, arms } => {
                     let defaults: Vec<_> = defaults.iter().map(|s| fold_stmt(s, env)).collect();
@@ -1516,7 +1592,7 @@ fn instance_overrides(target: &Module, targs: &[(Option<String>, Arg)], env: &En
             Some(n) => target.params.iter().find(|p| &p.name == n).ok_or_else(|| ctx.err(format!("'{}' has no parameter '{n}'", target.name)))?,
             None => {
                 next_positional += 1;
-                target.params.get(next_positional - 1).ok_or_else(|| ctx.err(format!("too many parameters for '{}'", target.name)))?
+                target.params.get(next_positional - 1).ok_or_else(|| ctx.err(format!("too many generic arguments for '{}'", target.name)))?
             }
         };
         match (param.kind.as_str(), arg) {
@@ -1618,6 +1694,128 @@ fn ctx_file<'a>(m: &'a Module, default: &'a str) -> &'a str {
 
 /// The first identifier of the elaborated module that names nothing: not a port, a declaration, an instance, a task.
 /// Instance connections are not checked (their names are the child's), nor the system functions (`$signed`).
+/// The similarity of two names, as `difflib` computes it: twice the size of the matching blocks over the total length.
+fn similarity(a: &str, b: &str) -> f64 {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    2.0 * matching(&a, &b) as f64 / (a.len() + b.len()) as f64
+}
+
+/// The number of characters in matching blocks, found the way `difflib` finds them (the longest block first, then the
+/// blocks on each side of it).
+fn matching(a: &[char], b: &[char]) -> usize {
+    let (mut bi, mut bj, mut bk) = (0, 0, 0);
+    for i in 0..a.len() {
+        for j in 0..b.len() {
+            let k = (0..).take_while(|&k| i + k < a.len() && j + k < b.len() && a[i + k] == b[j + k]).count();
+            if k > bk {
+                (bi, bj, bk) = (i, j, k);
+            }
+        }
+    }
+    if bk == 0 {
+        return 0;
+    }
+    bk + matching(&a[..bi], &b[..bj]) + matching(&a[bi + bk..], &b[bj + bk..])
+}
+
+/// ` (did you mean 'X'?)` for the candidate closest to `name` (similarity 0.6 or more), or nothing.
+pub(crate) fn suggest(name: &str, candidates: impl IntoIterator<Item = String>) -> String {
+    let best = candidates
+        .into_iter()
+        .map(|c| (similarity(name, &c), c))
+        .filter(|(score, _)| *score >= 0.6)
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal).then_with(|| a.1.cmp(&b.1)));
+    match best {
+        Some((_, c)) => format!(" (did you mean '{c}'?)"),
+        None => String::new(),
+    }
+}
+
+/// The names a module declares or can name: its ports, signals, instances, tasks and the locals of its blocks.
+fn known_names(module: &Module) -> Vec<String> {
+    let mut known: HashSet<String> = HashSet::new();
+    known.insert(module.name.clone());
+    known.extend(module.ports.iter().map(|p| p.name.clone()));
+    for item in &module.items {
+        match &item.kind {
+            ItemKind::Decl(d) => known.extend(d.decls.iter().map(|x| x.name.clone())),
+            ItemKind::Instance(i) => {
+                known.insert(i.name.clone());
+            }
+            ItemKind::Task { name, .. } => {
+                known.insert(name.clone());
+            }
+            ItemKind::Always { body, .. } | ItemKind::AlwaysComb(body) | ItemKind::Initial(body) => declared_in_stmt(body, &mut known),
+            _ => {}
+        }
+    }
+    known.into_iter().collect()
+}
+
+/// A member that the elaboration did not resolve: a member of an enum that has no such state, a field that a struct or
+/// a bundle does not have. The valid members are resolved already, so what is left is a mistake.
+fn member_error(module: &Module, env: &Env) -> Option<(String, Pos)> {
+    let found: std::cell::RefCell<Option<(String, Pos)>> = std::cell::RefCell::new(None);
+    let check = |e: &Expr| -> bool {
+        if found.borrow().is_some() {
+            return false;
+        }
+        let Expr::Member(base, field, pos) = e else { return false };
+        let Expr::Ident(name, _) = &**base else { return false };
+        if let Some(info) = env.enum_info(name) {
+            if !info.members.iter().any(|(m, _)| m == field) {
+                let hint = suggest(field, info.members.iter().map(|(m, _)| m.clone()));
+                *found.borrow_mut() = Some((format!("enum '{name}' has no member '{field}'{hint}"), *pos));
+            }
+        } else if let Some(s) = env.struct_of(name) {
+            if !s.fields.iter().any(|(f, _, _)| f == field) {
+                let hint = suggest(field, s.fields.iter().map(|(f, _, _)| f.clone()));
+                let sname = env.struct_name_of(name).unwrap_or_default();
+                *found.borrow_mut() = Some((format!("struct '{sname}' has no field '{field}'{hint}"), *pos));
+            }
+        } else if let Some(b) = env.bundle_of(name) {
+            if !b.fields.iter().any(|(f, _)| f == field) {
+                let hint = suggest(field, b.fields.iter().map(|(f, _)| f.clone()));
+                *found.borrow_mut() = Some((format!("bundle '{}' has no field '{field}'{hint}", b.bundle), *pos));
+            }
+        }
+        false
+    };
+    fn items_check(items: &[Item], check: &dyn Fn(&Expr) -> bool) {
+        for it in items {
+            match &it.kind {
+                ItemKind::ContAssign { lhs, rhs } => {
+                    expr_any(lhs, check);
+                    expr_any(rhs, check);
+                }
+                ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
+                    stmt_any_expr(body, check);
+                }
+                ItemKind::Instance(i) => {
+                    for c in &i.conns {
+                        if let Some(e) = &c.expr {
+                            expr_any(e, check);
+                        }
+                    }
+                }
+                ItemKind::GenFor { body, .. } => items_check(body, check),
+                ItemKind::GenIf { then, els, .. } => {
+                    items_check(then, check);
+                    if let Some(e) = els {
+                        items_check(e, check);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    items_check(&module.items, &check);
+    found.into_inner()
+}
+
 fn unknown_identifier(module: &Module) -> Option<(String, Pos)> {
     let mut known: HashSet<String> = HashSet::new();
     known.insert(module.name.clone());
@@ -1774,7 +1972,7 @@ fn implicit_clocking(env: &Env, body: Stmt, pos: Pos) -> (Sens, Stmt) {
             for n in dims.unwrap_or_default() {
                 targets = targets.into_iter().flat_map(|t| (0..n).map(move |i| Expr::Index(Box::new(t.clone()), Box::new(Expr::Num(i.to_string()))))).collect();
             }
-            targets.into_iter().map(|lhs| Stmt::Assign { lhs, rhs: init.clone(), nonblocking: true }).collect::<Vec<_>>()
+            targets.into_iter().map(|lhs| Stmt::Assign { lhs, rhs: init.clone(), nonblocking: true, pos: (0, 0) }).collect::<Vec<_>>()
         })
         .collect();
     let body = if resets.is_empty() {

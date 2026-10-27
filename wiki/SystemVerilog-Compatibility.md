@@ -53,7 +53,9 @@ The categories that exist today:
 Known limits:
 
 - a directive in the middle of a line, such as `` `ifdef `` after code on the same line, is not handled: put the
-  directive on its own line (the generated SystemVerilog of `ovc` has some, inside its assertions);
+  directive on its own line (the generated SystemVerilog of `ovc` does this in its assertions);
+- the concurrent assertions (`label: assert property (...) else ...;`) are skipped: they are checks for the simulator, not
+  part of the design;
 - the width checks (`width`, `carry`, `sizing`, `slice`, `sign`) are not in the Rust lint yet: use the Python lint for them;
 - the findings of an assignment are placed on the block that holds it (the statements do not keep a position yet);
 - the messages are not rewritten for `.sv` files (the advice of `.ov` files still says `.wrap()`).

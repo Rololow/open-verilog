@@ -97,11 +97,11 @@ struct Threader<'a> {
 }
 
 /// A call of a method of an instance: `inst.method(args)`.
-fn method_call(e: &Expr, names: &HashMap<String, usize>) -> Option<(String, String, Vec<Expr>)> {
+fn method_call(e: &Expr, names: &HashMap<String, usize>) -> Option<(String, String, Pos, Vec<Expr>)> {
     let Expr::Call(f, args) = e else { return None };
-    let Expr::Member(base, method, _) = &**f else { return None };
+    let Expr::Member(base, method, at) = &**f else { return None };
     let Expr::Ident(inst, _) = &**base else { return None };
-    names.contains_key(inst).then(|| (inst.clone(), method.clone(), args.clone()))
+    names.contains_key(inst).then(|| (inst.clone(), method.clone(), *at, args.clone()))
 }
 
 impl Threader<'_> {
@@ -314,7 +314,7 @@ impl Threader<'_> {
         }
         // method calls on instances: each call site gets ports on the callee, and a wire here for its result
         let names = instances(&ms[m].items);
-        let sites: RefCell<Vec<(String, String, Vec<Expr>)>> = RefCell::new(Vec::new());
+        let sites: RefCell<Vec<(String, String, Pos, Vec<Expr>)>> = RefCell::new(Vec::new());
         for it in &ms[m].items {
             let _ = rewrite_item(it, &|e| {
                 if let Some(call) = method_call(e, &names) {
@@ -325,21 +325,26 @@ impl Threader<'_> {
         }
         let mut new_decls = Vec::new();
         let mut site_wires: Vec<Expr> = Vec::new();
-        for (inst, method, args) in sites.into_inner() {
+        for (inst, method, method_pos, args) in sites.into_inner() {
             let seg = Seg { name: inst.clone(), idx: Vec::new(), pos: (0, 0) };
             let (at, child) = self.instance(ms, m, &seg)?;
             let pos = ms[m].items[at].pos;
             let callee = ms[child].items.iter().find_map(|it| match &it.kind {
-                ItemKind::Fn { name, params, ptypes, ret, body } if *name == method => {
+                ItemKind::Fn { name, params, ptypes, ret, body, .. } if *name == method => {
                     Some((params.clone(), ptypes.clone(), ret.clone(), body.clone()))
                 }
                 _ => None,
             });
             let Some((params, ptypes, ret, body)) = callee else {
-                return Err(self.err(pos, format!("module '{}' has no method '{method}'", ms[child].name)));
+                let fns = ms[child].items.iter().filter_map(|it| match &it.kind {
+                    ItemKind::Fn { name, .. } => Some(name.clone()),
+                    _ => None,
+                });
+                let hint = crate::elab::suggest(&method, fns);
+                return Err(self.err(method_pos, format!("module '{}' has no method '{method}'{hint}", ms[child].name)));
             };
             if args.len() != params.len() {
-                return Err(self.err(pos, format!("method '{method}' takes {} arguments, not {}", params.len(), args.len())));
+                return Err(self.err(method_pos, format!("method '{method}' takes {} arguments, not {}", params.len(), args.len())));
             }
             let k = {
                 let count = self.method_sites.entry((child, method.clone())).or_insert(0);

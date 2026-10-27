@@ -107,11 +107,11 @@ fn control_must_be_inside_a_stage() {
 
 #[test]
 fn checks_are_emitted_unless_disabled() {
-    let on = ovc::compile_with(MAC, "mac.ov", &ovc::Options { asserts: true, top: None }).unwrap().sv;
+    let on = ovc::compile_with(MAC, "mac.ov", &ovc::Options { asserts: true, top: None, cover: false }).unwrap().sv;
     assert!(on.contains("`ifndef SYNTHESIS"));
     assert!(on.contains("ov_a_advance_add: assert property (@(posedge clk) disable iff (rst) ov_valid_mul |=> ov_valid_add)"));
     assert!(on.contains("ov_a_valid_known: assert property"));
-    let off = ovc::compile_with(MAC, "mac.ov", &ovc::Options { asserts: false, top: None }).unwrap().sv;
+    let off = ovc::compile_with(MAC, "mac.ov", &ovc::Options { asserts: false, top: None, cover: false }).unwrap().sv;
     assert!(!off.contains("ov_a_"));
     assert!(!off.contains("`ifndef"));
 }
@@ -132,4 +132,19 @@ fn pipeline_arrays_are_scalarized_and_chained() {
     assert!(sv.contains("assign v_2 = v_1__s2 + 1;"));
     assert!(sv.contains("assign y = v_2__s3;"));
     assert_eq!(sv.matches("logic [7:0] v_0;").count(), 1);
+}
+
+#[test]
+fn a_pipeline_with_an_asynchronous_reset_clears_its_registers_on_the_reset_edge() {
+    let out = ovc::compile(
+        "pipeline A(input clk, input rstn, input logic valid_in, input logic [7:0] a, output logic [7:0] y, output logic valid_out) {
+  reset rstn low async;
+  stage first { val x = a + 1; }
+  stage out { assign y = x.wrap(); }
+}
+",
+        "a.ov",
+    )
+    .unwrap_or_else(|e| panic!("{}", e.message));
+    assert!(out.contains("always_ff @(posedge clk or negedge rstn)"), "{out}");
 }

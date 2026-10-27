@@ -8,6 +8,9 @@ const TERNARY_PREC: i32 = 0;
 const UNARY_PREC: i32 = 13;
 const PRIMARY_PREC: i32 = 99;
 
+/// The methods of values, for the suggestion when a call is not one of them.
+const METHODS: &[&str] = &["wrap", "reverse", "msb", "lsb", "zext", "sext", "fill", "cat", "delay", "list", "len", "filter", "enumerate", "select", "fold", "map"];
+
 fn prec(e: &Expr) -> i32 {
     match e {
         Expr::Binary(op, ..) => binop_prec(op).map_or(PRIMARY_PREC, i32::from),
@@ -56,8 +59,17 @@ fn text(e: &Expr) -> Result<String> {
             return Err(Error::new(format!("'.{name}' (a hierarchical reference or a method) is not supported yet"), "", pos.0, pos.1));
         }
         Expr::Call(func, args) => {
-            if let Expr::Member(_, name, pos) = &**func {
-                return Err(Error::new(format!("method '{name}' is not supported yet"), "", pos.0, pos.1));
+            if let Expr::Member(base, name, pos) = &**func {
+                // `a.cat(b)`: the bits of `a` followed by those of `b`; every operand needs a width
+                if name == "cat" && !args.is_empty() {
+                    if args.iter().any(|a| matches!(a, Expr::Num(t) if !t.contains('\''))) {
+                        return Err(Error::new("cat() needs sized operands", "", pos.0, pos.1));
+                    }
+                    let parts: Vec<Expr> = std::iter::once((**base).clone()).chain(args.iter().cloned()).collect();
+                    return Ok(format!("{{{}}}", list(&parts)?));
+                }
+                let hint = crate::elab::suggest(name, METHODS.iter().map(|m| m.to_string()));
+                return Err(Error::new(format!("method '{name}' is not supported yet{hint}"), "", pos.0, pos.1));
             }
             format!("{}({})", expr(func, PRIMARY_PREC, false)?, list(args)?)
         }

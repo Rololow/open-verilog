@@ -222,7 +222,7 @@ impl Emitter {
                 self.stmts_of(s)?;
                 self.line("end");
             }
-            Stmt::Assign { lhs, rhs, nonblocking } => {
+            Stmt::Assign { lhs, rhs, nonblocking, .. } => {
                 let op = if *nonblocking { "<=" } else { "=" };
                 let text = format!("{} {op} {};", expr(lhs, -1, false)?, expr(rhs, -1, false)?);
                 self.line(&text);
@@ -264,7 +264,7 @@ impl Emitter {
                 self.stmts_of(body)?;
                 self.line("end");
             }
-            Stmt::Case { subject, kind, arms } => {
+            Stmt::Case { subject, kind, arms, .. } => {
                 self.line(&format!("{} ({})", case_keyword(kind, arms), expr(subject, -1, false)?));
                 self.ind += 1;
                 for (labels, body) in arms {

@@ -138,7 +138,7 @@ fn hoist(s: &crate::ast::Stmt, scope: &HashMap<String, String>, decls: &mut Vec<
                             is_async: false,
                         });
                         if let Some(init) = &x.init {
-                            out.push(Stmt::Assign { lhs: Expr::Ident(fresh.clone(), (0, 0)), rhs: rename_expr(init, &local), nonblocking: false });
+                            out.push(Stmt::Assign { lhs: Expr::Ident(fresh.clone(), (0, 0)), rhs: rename_expr(init, &local), nonblocking: false, pos: (0, 0) });
                         }
                         local.insert(x.name.clone(), fresh);
                     }
@@ -148,7 +148,7 @@ fn hoist(s: &crate::ast::Stmt, scope: &HashMap<String, String>, decls: &mut Vec<
             }
             Stmt::Block(out)
         }
-        Stmt::Assign { lhs, rhs, nonblocking } => Stmt::Assign { lhs: ex(lhs), rhs: ex(rhs), nonblocking: *nonblocking },
+        Stmt::Assign { lhs, rhs, nonblocking, pos } => Stmt::Assign { lhs: ex(lhs), rhs: ex(rhs), nonblocking: *nonblocking, pos: *pos },
         Stmt::If { cond, then, els } => Stmt::If {
             cond: ex(cond),
             then: Box::new(hoist(then, scope, decls, counter)),
@@ -161,13 +161,14 @@ fn hoist(s: &crate::ast::Stmt, scope: &HashMap<String, String>, decls: &mut Vec<
             header.step = header.step.as_ref().map(ex);
             Stmt::For { header, body: Box::new(hoist(body, scope, decls, counter)) }
         }
-        Stmt::Case { subject, kind, arms } => Stmt::Case {
+        Stmt::Case { subject, kind, arms, pos } => Stmt::Case {
             subject: ex(subject),
             kind: kind.clone(),
             arms: arms
                 .iter()
                 .map(|(labels, body)| (labels.as_ref().map(|ls| ls.iter().map(ex).collect()), hoist(body, scope, decls, counter)))
                 .collect(),
+            pos: *pos,
         },
         Stmt::ExprStmt(e) => Stmt::ExprStmt(ex(e)),
         Stmt::Val(name, e) => Stmt::Val(name.clone(), ex(e)),

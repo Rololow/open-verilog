@@ -45,19 +45,19 @@ pub struct Lowered {
 pub struct Directives {
     pub clock: Option<String>,
     pub reset: Option<(String, bool)>,
+    /// `reset NAME [low] async;`: the registers are cleared by the reset edge, not by the clock.
+    pub async_reset: bool,
 }
 
-/// The directives of a pipeline module, read from its source. An asynchronous reset is not supported yet.
-pub fn directives(m: &Module, file: &str) -> Result<Directives> {
+/// The directives of a pipeline module, read from its source.
+pub fn directives(m: &Module) -> Result<Directives> {
     let mut out = Directives::default();
     for item in &m.items {
         match &item.kind {
             ItemKind::Clock { name } => out.clock = Some(name.clone()),
             ItemKind::Reset { name, low, is_async } => {
-                if *is_async {
-                    return Err(Error::new("an asynchronous pipeline reset is not supported yet", file, item.pos.0, item.pos.1));
-                }
                 out.reset = Some((name.clone(), *low));
+                out.async_reset = *is_async;
             }
             _ => {}
         }
@@ -175,7 +175,15 @@ pub fn lower(source: &Module, file: &str, asserts: bool, directives: &Directives
     let valid_in = if has_valid_in { Expr::Ident("valid_in".into(), module_pos) } else { Expr::Num("1'b1".into()) };
     out.push(generated(ItemKind::ContAssign { lhs: Expr::Ident(valid[0].clone(), module_pos), rhs: valid_in }));
     out.extend(body);
-    for item in control::boundaries(&plan, &names, &valid, &carried, &clock, reset_cond, module_pos) {
+    // the clock edge, and the reset edge when the reset is asynchronous (`reset rstn low async;`)
+    let mut edges = vec![("posedge".to_string(), Expr::Ident(clock.clone(), module_pos))];
+    if directives.async_reset {
+        if let Some((name, low)) = &reset {
+            let edge = if *low { "negedge" } else { "posedge" };
+            edges.push((edge.to_string(), Expr::Ident(name.clone(), module_pos)));
+        }
+    }
+    for item in control::boundaries(&plan, &names, &valid, &carried, &edges, reset_cond, module_pos) {
         out.push(item);
     }
     if ports.contains_key("valid_out") {

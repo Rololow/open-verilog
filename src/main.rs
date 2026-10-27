@@ -30,6 +30,7 @@ struct Args {
     emit_probes: Option<String>,
     dump_pipeline: bool,
     werror: bool,
+    cover: bool,
     asserts: bool,
     top: Option<String>,
     build: bool,
@@ -55,6 +56,7 @@ fn parse_args(argv: Vec<String>) -> Result<Args, String> {
             "--emit-probes" => args.emit_probes = Some(value("--emit-probes")?),
             "--dump-pipeline" => args.dump_pipeline = true,
             "--werror" => args.werror = true,
+            "--cover" => args.cover = true,
             "--no-asserts" => args.asserts = false,
             "--top" => args.top = Some(it.next().ok_or("--top needs a module with its arguments")?),
             "-h" | "--help" => return Err(String::new()),
@@ -99,6 +101,11 @@ fn main() -> ExitCode {
     // `ovc lint ...`: the checks of plain SystemVerilog files (see `lint`)
     if argv.first().map(String::as_str) == Some("lint") {
         let code = ovc::lint::main(&argv[1..]);
+        return ExitCode::from(u8::try_from(code).unwrap_or(2));
+    }
+    // `ovc cover LOG...`: the coverage report of the simulation logs (see `cover`)
+    if argv.first().map(String::as_str) == Some("cover") {
+        let code = ovc::cover::main(&argv[1..]);
         return ExitCode::from(u8::try_from(code).unwrap_or(2));
     }
     let args = match parse_args(argv) {
@@ -154,7 +161,7 @@ fn run(args: Args) -> Result<(), String> {
         return Err("no .ov file found".into());
     }
     let units = parse_units(&paths)?;
-    let options = ovc::Options { asserts: args.asserts, top: args.top.clone() };
+    let options = ovc::Options { asserts: args.asserts, top: args.top.clone(), cover: args.cover };
     let sources: Vec<(String, String)> = units.iter().map(|(n, s, _)| (n.clone(), s.clone())).collect();
     let parsed: Vec<File> = units.into_iter().map(|(_, _, f)| f).collect();
     let compiled = match ovc::compile_parsed(parsed, &options) {
@@ -248,36 +255,45 @@ fn run(args: Args) -> Result<(), String> {
 fn write_project(args: &Args, compiled: &ovc::Compiled) -> Result<(), String> {
     let out_dir = PathBuf::from(args.output.clone().unwrap_or_else(|| "out".into()));
     let root = PathBuf::from(args.root.clone().unwrap_or_else(|| ".".into()));
+    let cwd = std::env::current_dir().map_err(|e| format!("ovc: {e}"))?;
+    let root_abs = cwd.join(&root);
     let mut list = Vec::new();
     // the packages first: every file that uses a packed struct type comes after them in the list
     if !compiled.packages.is_empty() {
         let target = out_dir.join("_packages.sv");
         std::fs::create_dir_all(&out_dir).map_err(|e| format!("ovc: {}: {e}", out_dir.display()))?;
         std::fs::write(&target, &compiled.packages).map_err(|e| format!("ovc: {}: {e}", target.display()))?;
-        list.push(target.to_string_lossy().replace('\\', "/"));
+        list.push(list_entry(&target));
     }
     for (origin, text) in &compiled.by_origin {
         if origin.starts_with('<') {
             continue;
         }
-        let source = PathBuf::from(origin);
-        let relative = source.strip_prefix(&root).unwrap_or(&source).with_extension("sv");
-        let target = out_dir.join(&relative);
+        // the folders of the source below the root, so the output mirrors them under the output folder
+        let source = cwd.join(origin);
+        let inside = source.strip_prefix(&root_abs).map_err(|_| format!("ovc: {origin}: not under the root {} (use --root)", root.display()))?;
+        let target = out_dir.join(inside.with_extension("sv"));
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("ovc: {}: {e}", parent.display()))?;
         }
         std::fs::write(&target, text).map_err(|e| format!("ovc: {}: {e}", target.display()))?;
-        list.push(target.to_string_lossy().replace('\\', "/"));
+        list.push(list_entry(&target));
     }
     if let Some((_, text)) = compiled.by_origin.iter().find(|(o, _)| o.starts_with('<') && o.as_str() == "<stdlib>") {
         let target = out_dir.join("_library.sv");
         std::fs::write(&target, text).map_err(|e| format!("ovc: {}: {e}", target.display()))?;
-        list.push(target.to_string_lossy().replace('\\', "/"));
+        list.push(list_entry(&target));
     }
     let file_list = out_dir.join("files.f");
     std::fs::write(&file_list, list.join("\n") + "\n").map_err(|e| format!("ovc: {}: {e}", file_list.display()))?;
     eprintln!("ovc: {} file(s) -> {}; file list: {}", list.len(), out_dir.display(), file_list.display());
     Ok(())
+}
+
+/// A line of the file list: the path relative to the working directory when it is below it, absolute otherwise.
+fn list_entry(path: &Path) -> String {
+    let shown = std::env::current_dir().ok().and_then(|cwd| path.strip_prefix(&cwd).ok().map(Path::to_path_buf));
+    shown.as_deref().unwrap_or(path).to_string_lossy().replace('\\', "/")
 }
 
 fn render(e: &Error, sources: &[(String, String)]) -> String {

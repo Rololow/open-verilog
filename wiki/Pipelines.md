@@ -69,13 +69,102 @@ stages. The hand-written version above has none of them.
 
 ## Control
 
-Stalls and flushes are written as conditions on a stage, not as logic at each boundary:
+A stage can hold, drop or refill the instructions in front of it. You write the condition on the stage; the compiler
+writes the logic at every boundary it affects. There are three conditions:
 
-- `stall_when(c)` freezes the stage and the stages before it, and inserts a bubble behind it;
-- `flush_when(c)` removes the instruction from the stage and from the stages before it;
-- `flush_younger_when(c)` removes the instructions in the stages before it only.
+- `stall_when(c)`: the stage and every stage before it freeze, and a bubble (an empty slot) is inserted behind the
+  stage. Nothing is lost: the producer must hold its input while it is stalled.
+- `flush_when(c)`: the instruction in the stage, and the instructions in the stages before it, are removed.
+- `flush_younger_when(c)`: only the instructions in the stages before it are removed, not the one in the stage: an
+  older instruction that must be redone.
 
-The priority at each boundary is: reset, flush, hold, bubble, load.
+Each condition is ignored when its stage is empty. When several conditions meet at a boundary, the first that applies
+wins, in this order: reset, flush, hold (from a stall), bubble, load.
+
+### A stall
+
+A fetch stage waits for memory. `stall_when` freezes the stages up to `fetch` while `wait_mem` is high. A stalled
+pipeline must say so to its producer, so it needs a `ready_out` port:
+
+```systemverilog ov
+pipeline Stall(input clk, input rst, input logic valid_in, output logic ready_out, input logic [7:0] a,
+               input logic wait_mem, output logic [7:0] y, output logic valid_out) {
+  stage fetch { val x = a + 1; stall_when(wait_mem); }
+  stage exec  { val z = x * 2; }
+  stage out   { assign y = z.wrap(); }
+}
+```
+
+Without `ready_out`, the compiler warns: the producer cannot know when to hold its data, so an input would be lost.
+
+### A flush
+
+A branch is resolved in `decode`. When `taken` is high, the instructions behind it must not reach `exec`:
+`flush_when` removes the instruction in `decode` and the ones before it. `taken` is an input: it is read in a later
+stage, so it is written `pipe.taken` (its value now), not `taken` (see [Inputs](#inputs-read-in-a-later-stage)).
+
+```systemverilog ov
+pipeline Flush(input clk, input rst, input logic valid_in, input logic [7:0] a,
+               input logic taken, output logic [7:0] y, output logic valid_out) {
+  stage fetch { val x = a + 1; }
+  stage decode { val d = x + 1; flush_when(pipe.taken); }
+  stage exec  { val z = d + 1; }
+  stage out   { assign y = z.wrap(); }
+}
+```
+
+### A trap in a later stage
+
+An exception found in `exec` must remove the instructions that were fetched after the faulting one, but not the
+faulting instruction itself. `flush_younger_when` does that:
+
+```systemverilog ov
+pipeline Younger(input clk, input rst, input logic valid_in, input logic [7:0] a,
+                 input logic trap, output logic [7:0] y, output logic valid_out) {
+  stage fetch { val x = a + 1; }
+  stage decode { val d = x + 1; }
+  stage exec  { val z = d + 1; flush_younger_when(pipe.trap); }
+  stage out   { assign y = z.wrap(); }
+}
+```
+
+### Inputs read in a later stage
+
+An input port enters the pipeline with the instruction, in the first stage. Read in a later stage, it must say which
+value it means:
+
+- `stage.x` (for example `decode.taken`): the value that came with this instruction, carried through the stages;
+- `pipe.x`: the value of the port now, not carried, and not part of the stall checks.
+
+Leaving it implicit is an error, because the two meanings are both common and picking the wrong one silently delays or
+skews the signal.
+
+### What this costs
+
+The rules above are the whole of the control model, and they are checked by the compiler. They are still a model to
+learn: a condition on one stage can freeze, drop or refill instructions in other stages, and the valid bits, the
+carried values and the ready signals all follow from it. The compiler also generates simulation checks (an instruction
+must reach the next stage, a stalled stage must not change, valid bits are never X) that run with `--asserts` and are
+removed by `--no-asserts`.
+
+For a small pipeline, the control conditions replace the logic that would otherwise be written by hand at each
+boundary. For a design with many stages and controls that interact, the rules are where the time goes. A design that
+only carries values from one stage to the next (no stalls, no flushes) needs only the stage declarations.
+
+## Reset
+
+The reset is a port or a directive. `reset rstn low async;` makes the reset asynchronous: the valid bits and the
+clocked values clear on the falling edge of `rstn`, without waiting for the clock. Without `async`, they clear on the
+next clock edge while the reset is high.
+
+```systemverilog ov
+pipeline Async(input clk, input rstn, input logic valid_in, input logic [7:0] a,
+               output logic [7:0] y, output logic valid_out) {
+  reset rstn low async;
+  stage first { val x = a + 1; }
+  stage out   { assign y = x.wrap(); }
+}
+```
 
 ## A parametric number of stages
 

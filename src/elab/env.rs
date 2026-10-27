@@ -27,9 +27,19 @@ pub type ViewTable = HashMap<String, (String, String, String)>;
 /// The type and unpacked dimensions of each signal of a module, by name.
 pub type SignalTable = HashMap<String, (DType, Vec<crate::ast::Expr>)>;
 
+/// The coverage items of a module: each item is a key (`file:line case arm A, B`) and the condition that takes it.
+#[derive(Debug, Default)]
+pub struct CoverState {
+    pub on: bool,
+    pub file: String,
+    pub items: Vec<(String, crate::ast::Expr)>,
+}
+
 /// Compile-time bindings. Scopes share the enum table and the record of the enums they used.
 #[derive(Debug, Clone, Default)]
 pub struct Env {
+    /// The coverage items of the module being elaborated (`--cover`); a new one for each module.
+    cover: Rc<RefCell<CoverState>>,
     ints: HashMap<String, i64>,
     types: HashMap<String, DType>,
     enums: Rc<BTreeMap<String, EnumInfo>>,
@@ -406,6 +416,11 @@ impl Env {
         self.struct_of.borrow_mut().insert(signal.to_string(), key);
     }
 
+    /// The name of the struct type a signal was declared with, if any.
+    pub fn struct_name_of(&self, signal: &str) -> Option<String> {
+        self.struct_of.borrow().get(signal).cloned()
+    }
+
     /// The struct a signal was declared with, if any.
     pub fn struct_of(&self, signal: &str) -> Option<StructInfo> {
         let key = self.struct_of.borrow().get(signal).cloned()?;
@@ -442,6 +457,31 @@ impl Env {
         let mut fns = (*self.fns).clone();
         fns.remove(name);
         Env { fns: Rc::new(fns), ..self.clone() }
+    }
+
+    /// Starts the coverage items of a module (a new record, so the instances elaborated inside it have their own).
+    pub fn start_cover(&mut self, on: bool, file: &str) {
+        self.cover = Rc::new(RefCell::new(CoverState { on, file: file.to_string(), items: Vec::new() }));
+    }
+
+    pub fn cover_on(&self) -> bool {
+        self.cover.borrow().on
+    }
+
+    pub fn cover_file(&self) -> String {
+        self.cover.borrow().file.clone()
+    }
+
+    /// Adds a coverage item; a key already there keeps its first condition (a statement may be folded twice).
+    pub fn add_cover(&self, key: String, cond: crate::ast::Expr) {
+        let mut state = self.cover.borrow_mut();
+        if !state.items.iter().any(|(k, _)| *k == key) {
+            state.items.push((key, cond));
+        }
+    }
+
+    pub fn cover_items(&self) -> Vec<(String, crate::ast::Expr)> {
+        self.cover.borrow().items.clone()
     }
 
     pub fn enum_info(&self, name: &str) -> Option<&EnumInfo> {

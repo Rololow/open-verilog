@@ -29,6 +29,35 @@ impl Parser {
         self.parse_item()
     }
 
+    /// Skips a concurrent assertion up to its `;`, or up to the `end` of its `else begin ... end` action.
+    fn skip_assertion(&mut self) -> Result<Vec<ItemKind>> {
+        if self.peek(1).text == ":" {
+            self.i += 2;
+        }
+        let (mut parens, mut blocks) = (0i32, 0i32);
+        loop {
+            let t = self.tok().clone();
+            if t.kind == Kind::Eof {
+                return Err(self.fail("the assertion is not closed"));
+            }
+            self.i += 1;
+            match t.text.as_str() {
+                "(" => parens += 1,
+                ")" => parens -= 1,
+                "begin" => blocks += 1,
+                "end" => {
+                    blocks -= 1;
+                    if blocks == 0 && parens == 0 {
+                        self.accept(";");
+                        return Ok(vec![]);
+                    }
+                }
+                ";" if parens == 0 && blocks == 0 => return Ok(vec![]),
+                _ => {}
+            }
+        }
+    }
+
     fn parse_item(&mut self) -> Result<Vec<Item>> {
         let pos = (self.tok().line, self.tok().col);
         if self.accept("generate") {
@@ -49,6 +78,12 @@ impl Parser {
         if t.kind != Kind::Ident {
             let found = if t.kind == Kind::Eof { "end of file" } else { &t.text };
             return Err(self.fail(format!("module item expected, found '{found}'")));
+        }
+        // a concurrent assertion (`[label:] assert property (...) [else <statement>];`) is checked by the simulator: it
+        // is not part of the design
+        let labelled = self.peek(1).text == ":" && matches!(self.peek(2).text.as_str(), "assert" | "assume" | "cover");
+        if labelled || matches!(t.text.as_str(), "assert" | "assume" | "cover") {
+            return self.skip_assertion();
         }
         match t.text.as_str() {
             "genvar" => {
@@ -181,9 +216,16 @@ impl Parser {
                 Ok(vec![ItemKind::Fsm { enum_name, name, init, defaults, arms }])
             }
             "override" if self.peek(1).text == "fn" => {
-                // an override is a function that replaces the one of the base module
+                // an override is a function that replaces the one of the base module: it remembers where its `fn` is
                 self.i += 1;
-                self.parse_item_kind()
+                let at = (self.tok().line, self.tok().col);
+                let mut kinds = self.parse_item_kind()?;
+                for k in &mut kinds {
+                    if let ItemKind::Fn { override_at, .. } = k {
+                        *override_at = Some(at);
+                    }
+                }
+                Ok(kinds)
             }
             "fn" if self.peek(1).kind == Kind::Ident => {
                 self.i += 1;
@@ -197,7 +239,7 @@ impl Parser {
                 let ret = if self.accept("->") { Some(self.parse_dtype(false)?) } else { None };
                 let start = self.i;
                 match self.parse_fn_body("}") {
-                    Ok(body) => Ok(vec![ItemKind::Fn { name, params, ptypes, ret, body }]),
+                    Ok(body) => Ok(vec![ItemKind::Fn { name, params, ptypes, ret, body, override_at: None }]),
                     Err(err) => {
                         // not a pure function: a procedural one, whose statements are inlined at its calls
                         self.i = start;

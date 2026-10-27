@@ -22,8 +22,16 @@ pub fn lower(env: &Env, pos: Pos, file: &str, names: (&str, &str, &str), default
     let init_state = member(init)?;
     let goto = |target: &Expr| -> Result<Expr> {
         match target {
-            // the target may already be folded to the enum's localparam name (a bare member is resolved first)
-            Expr::Ident(state, _) => member(state.strip_prefix(&format!("{enum_name}_")).unwrap_or(state)),
+            // the target may already be folded to the enum's localparam name (a bare member is resolved first); a
+            // target that is not a state is reported where it is written
+            Expr::Ident(state, at) => {
+                let m = state.strip_prefix(&format!("{enum_name}_")).unwrap_or(state);
+                if info.members.iter().any(|(x, _)| x == m) {
+                    Ok(Expr::Ident(format!("{enum_name}_{m}"), pos))
+                } else {
+                    Err(Error::new(format!("'{m}' is not a state of '{enum_name}'"), file, at.0, at.1))
+                }
+            }
             _ => Err(fail("goto takes a state name".into())),
         }
     };
@@ -34,7 +42,7 @@ pub fn lower(env: &Env, pos: Pos, file: &str, names: (&str, &str, &str), default
     for (label, body) in arms {
         cases.push((Some(vec![member(label)?]), resolve_gotos(body, &next, &goto)?));
     }
-    comb.push(Stmt::Case { subject: ident(name, pos), kind: "case".into(), arms: cases });
+    comb.push(Stmt::Case { subject: ident(name, pos), kind: "case".into(), arms: cases, pos });
 
     // the module's reset (see `implicit_clocking`): its port and its polarity
     let reset = env.reset().cloned().unwrap_or(super::env::ResetSpec { name: "rst".into(), low: false, is_async: false });
@@ -65,7 +73,7 @@ fn ident(name: &str, pos: Pos) -> Expr {
 }
 
 fn assign(lhs: &str, rhs: Expr, nonblocking: bool, pos: Pos) -> Stmt {
-    Stmt::Assign { lhs: ident(lhs, pos), rhs, nonblocking }
+    Stmt::Assign { lhs: ident(lhs, pos), rhs, nonblocking, pos }
 }
 
 fn decl(dtype: crate::ast::DType, name: &str, init: Option<Expr>) -> ItemKind {
@@ -80,7 +88,7 @@ fn decl(dtype: crate::ast::DType, name: &str, init: Option<Expr>) -> ItemKind {
 /// Replaces each `goto S;` by an assignment of the next state.
 fn resolve_gotos(s: &Stmt, next: &str, goto: &dyn Fn(&Expr) -> Result<Expr>) -> Result<Stmt> {
     Ok(match s {
-        Stmt::Goto(target) => Stmt::Assign { lhs: Expr::Ident(next.to_string(), (0, 0)), rhs: goto(target)?, nonblocking: false },
+        Stmt::Goto(target) => Stmt::Assign { lhs: Expr::Ident(next.to_string(), (0, 0)), rhs: goto(target)?, nonblocking: false, pos: (0, 0) },
         Stmt::Block(stmts) => Stmt::Block(stmts.iter().map(|x| resolve_gotos(x, next, goto)).collect::<Result<_>>()?),
         Stmt::If { cond, then, els } => Stmt::If {
             cond: cond.clone(),
@@ -91,12 +99,12 @@ fn resolve_gotos(s: &Stmt, next: &str, goto: &dyn Fn(&Expr) -> Result<Expr>) -> 
             },
         },
         Stmt::For { header, body } => Stmt::For { header: header.clone(), body: Box::new(resolve_gotos(body, next, goto)?) },
-        Stmt::Case { subject, kind, arms } => {
+        Stmt::Case { subject, kind, arms, pos } => {
             let mut out = Vec::with_capacity(arms.len());
             for (labels, body) in arms {
                 out.push((labels.clone(), resolve_gotos(body, next, goto)?));
             }
-            Stmt::Case { subject: subject.clone(), kind: kind.clone(), arms: out }
+            Stmt::Case { subject: subject.clone(), kind: kind.clone(), arms: out, pos: *pos }
         }
         other => other.clone(),
     })

@@ -24,6 +24,13 @@ extension does it for you.
 An error has a position (`file:line:column`), the message, and the source line with a caret under the problem. Anything
 the compiler does not support is reported this way; nothing is dropped silently.
 
-## Not in the Rust CLI yet
+## Lint and coverage
 
-- `lint` and `cover`: not in `ovc` yet.
+- `ovc lint FILE.sv... [-f FILES.f] [+incdir+DIR] [-DNAME[=VALUE]] [--top NAME] [--only CAT,...] [--ignore CAT,...] [--werror]`:
+  the checks of plain SystemVerilog files, without rewriting them (see [SystemVerilog in .ov, and lint](SystemVerilog-Compatibility)).
+- `ovc design.ov --cover`: adds the coverage items of the case statements, as flags printed at the end of a simulation
+  run with `OVC_COVER` defined.
+- `ovc cover LOG...`: the coverage report of those simulation logs. Items are covered when any run covered them; the
+  report lists what nothing covered, by file and line.
+
+Not in the Rust compiler yet: the coverage of `match` expressions (only `case` statements get items).

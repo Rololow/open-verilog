@@ -72,6 +72,7 @@ pub fn scalarize(m: &Module, file: &str) -> Result<Module> {
         let Some(&n) = sizes.get(name) else { return Ok(None) };
         match int_of(idx) {
             Some(k) if (0..n).contains(&k) => Ok(Some(Expr::Ident(format!("{name}_{k}"), (0, 0)))),
+            Some(k) => Err(((0, 0), format!("index {k} out of range (size {n})"))),
             _ => Err(((0, 0), format!("the index of array '{name}' must be a constant in range (the array is scalarized)"))),
         }
     };

@@ -83,7 +83,8 @@ impl Parser {
                 self.parse_typedef(out)?;
             } else if self.at("package") {
                 self.i += 1;
-                self.ident()?;
+                let name = self.ident()?;
+                out.packages.push(name);
                 self.expect(";")?;
                 self.top_items(out, Some("endpackage"))?;
                 self.accept(";");
@@ -99,6 +100,10 @@ impl Parser {
     /// `import Pkg::*;` or `import Pkg::name;`: packages are flattened, so the import has nothing to do.
     pub(super) fn skip_import(&mut self) -> Result<()> {
         self.expect("import")?;
+        // the package is checked once the sources are read: it must be defined by one of them
+        if self.tok().kind == Kind::Ident {
+            self.imports.push((self.tok().text.clone(), (self.tok().line, self.tok().col)));
+        }
         while !self.accept(";") {
             if self.tok().kind == Kind::Eof {
                 return Err(self.fail("';' missing after import"));
@@ -437,6 +442,6 @@ impl Parser {
         self.expect(";")?;
         let body = self.parse_fn_body("endfunction")?;
         let ret = if ret.packed.is_empty() { None } else { Some(ret) };
-        Ok(ItemKind::Fn { name, params, ptypes, ret, body })
+        Ok(ItemKind::Fn { name, params, ptypes, ret, body, override_at: None })
     }
 }

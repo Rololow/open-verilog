@@ -1,18 +1,21 @@
-//! The checks of `ovc lint` on the elaborated modules: latches, drivers, instance connections and assignment style (the
-//! Python checks of the same names). They are warnings, and they run only in the lint: a design that is compiled is not
-//! checked this way.
+//! The checks of `ovc lint` on the elaborated modules (the Python lint checks of the same names): widths, latches,
+//! drivers, instance connections and assignment style. They are warnings, and they run only in the lint: a design that
+//! is compiled is not checked this way.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use crate::ast::{Dir, Expr, Item, ItemKind, Module, Pos, Stmt};
+use crate::ast::{Dir, DType, Expr, File, Item, ItemKind, Module, Pos, Stmt};
 use crate::domains::reads_of;
 use crate::elab::fold::int_of;
-use crate::elab::width::width_of;
+use crate::elab::width::{width_of, Width};
 use crate::elab::{expr_any, stmt_any_expr, Env};
 
 /// The warnings of the checks, as the compiler writes them: `file:line:col: warning: message`.
-pub fn check(modules: &[Module], envs: &HashMap<String, Env>) -> Vec<String> {
+///
+/// `wrapped` lists the targets and the connections written with `.wrap()` in the source: the elaboration does not keep
+/// the marker, and a truncation written on purpose is not a width problem.
+pub fn check(modules: &[Module], envs: &HashMap<String, Env>, wrapped: &Wrapped) -> Vec<String> {
     // the items of the generate loops and conditions count as if they were written at the top, as they are unrolled
     // in the reference (an instance in a loop drives its outputs all the same)
     let flat: Vec<Module> = modules.iter().map(|m| Module { items: flatten(&m.items), ..m.clone() }).collect();
@@ -21,12 +24,99 @@ pub fn check(modules: &[Module], envs: &HashMap<String, Env>) -> Vec<String> {
     let mut out = Vec::new();
     for m in modules {
         let env = envs.get(&m.name);
+        check_widths(m, env, &by_name, wrapped, &mut out);
         check_latches(m, env, &mut out);
         check_drivers(m, &by_name, &mut out);
         check_connections(m, &by_name, &mut out);
         check_process_style(m, &mut out);
     }
     out
+}
+
+/// The truncations written on purpose in the source, by module (without its specialisation).
+#[derive(Default)]
+pub struct Wrapped {
+    /// The targets of an assignment with `.wrap()`: (module, signal).
+    signals: HashSet<(String, String)>,
+    /// The connections with `.wrap()`: (module, instance, port).
+    ports: HashSet<(String, String, String)>,
+}
+
+/// What the source writes with `.wrap()`.
+pub fn wrapped_in(file: &File) -> Wrapped {
+    let mut w = Wrapped::default();
+    for m in &file.modules {
+        scan_wrapped(&base_module(&m.name), &m.items, &mut w);
+    }
+    w
+}
+
+fn scan_wrapped(module: &str, items: &[Item], w: &mut Wrapped) {
+    for it in items {
+        match &it.kind {
+            ItemKind::ContAssign { lhs, rhs } => mark(module, lhs, rhs, w),
+            // `wire T x = e;` is an assignment of `e` to `x`
+            ItemKind::Decl(d) => {
+                for x in &d.decls {
+                    if let Some(e) = &x.init {
+                        mark(module, &Expr::Ident(x.name.clone(), (0, 0)), e, w);
+                    }
+                }
+            }
+            ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
+                for (lhs, rhs, _, _) in assignments(body) {
+                    mark(module, lhs, rhs, w);
+                }
+            }
+            ItemKind::Instance(i) => {
+                for c in &i.conns {
+                    if let (Some(p), Some(e)) = (&c.port, &c.expr) {
+                        if has_wrap(e) {
+                            w.ports.insert((module.to_string(), i.name.clone(), p.clone()));
+                        }
+                    }
+                }
+            }
+            ItemKind::GenFor { body, .. } | ItemKind::Stage { items: body, .. } => scan_wrapped(module, body, w),
+            ItemKind::GenIf { then, els, .. } => {
+                scan_wrapped(module, then, w);
+                if let Some(e) = els {
+                    scan_wrapped(module, e, w);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The name of a target as the elaborated design has it: a member of a bundle is `bus_field` (`move_write.row` is
+/// `move_write_row`), an element of an array is its array.
+fn flat_name(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Ident(n, _) => Some(n.clone()),
+        Expr::Index(b, _) | Expr::Slice(b, _, _, _) => flat_name(b),
+        Expr::Member(b, f, _) => Some(format!("{}_{f}", flat_name(b)?)),
+        _ => None,
+    }
+}
+
+fn mark(module: &str, lhs: &Expr, rhs: &Expr, w: &mut Wrapped) {
+    if has_wrap(rhs) {
+        for p in parts(lhs) {
+            if let Some(n) = flat_name(p) {
+                w.signals.insert((module.to_string(), n));
+            }
+        }
+    }
+}
+
+fn has_wrap(e: &Expr) -> bool {
+    expr_any(e, &|x| matches!(x, Expr::Call(f, _) if matches!(&**f, Expr::Member(_, m, _) if m == "wrap")))
+}
+
+/// The module a specialised name (`Ram__32_512`) comes from.
+fn base_module(name: &str) -> String {
+    name.split("__").next().unwrap_or(name).to_string()
 }
 
 /// The items with those of the generate loops and conditions in place of the loop.
@@ -69,23 +159,34 @@ fn parts(e: &Expr) -> Vec<&Expr> {
     }
 }
 
+/// Whether two expressions are the same as written (positions aside).
+fn same(a: &Expr, b: &Expr) -> bool {
+    text(a) == text(b)
+}
+
 fn text(e: &Expr) -> String {
     crate::emit::expr::expr(e, -1, false).unwrap_or_else(|_| "?".into())
 }
 
-/// Every assignment of a statement: its target and whether it is non-blocking.
-fn assignments<'a>(s: &'a Stmt, out: &mut Vec<(&'a Expr, bool)>) {
+/// Every assignment of a statement: its target, its value, whether it is non-blocking, and its position.
+fn assignments(s: &Stmt) -> Vec<(&Expr, &Expr, bool, Pos)> {
+    let mut out = Vec::new();
+    collect(s, &mut out);
+    out
+}
+
+fn collect<'a>(s: &'a Stmt, out: &mut Vec<(&'a Expr, &'a Expr, bool, Pos)>) {
     match s {
-        Stmt::Assign { lhs, nonblocking, .. } => out.push((lhs, *nonblocking)),
-        Stmt::Block(v) => v.iter().for_each(|x| assignments(x, out)),
+        Stmt::Assign { lhs, rhs, nonblocking, pos } => out.push((lhs, rhs, *nonblocking, *pos)),
+        Stmt::Block(v) => v.iter().for_each(|x| collect(x, out)),
         Stmt::If { then, els, .. } => {
-            assignments(then, out);
+            collect(then, out);
             if let Some(e) = els {
-                assignments(e, out);
+                collect(e, out);
             }
         }
-        Stmt::Case { arms, .. } => arms.iter().for_each(|(_, b)| assignments(b, out)),
-        Stmt::For { body, .. } => assignments(body, out),
+        Stmt::Case { arms, .. } => arms.iter().for_each(|(_, b)| collect(b, out)),
+        Stmt::For { body, .. } => collect(body, out),
         _ => {}
     }
 }
@@ -97,7 +198,7 @@ fn def_assigned(s: &Stmt, env: Option<&Env>) -> BTreeSet<String> {
         Stmt::Block(v) => v.iter().flat_map(|x| def_assigned(x, env)).collect(),
         Stmt::If { then, els: Some(e), .. } => def_assigned(then, env).intersection(&def_assigned(e, env)).cloned().collect(),
         Stmt::If { els: None, .. } => BTreeSet::new(),
-        Stmt::Case { subject, kind, arms } => {
+        Stmt::Case { subject, kind, arms, .. } => {
             let has_default = arms.iter().any(|(labels, _)| labels.is_none());
             if !has_default && !case_covers_all(subject, kind, arms, env) {
                 return BTreeSet::new();
@@ -132,13 +233,134 @@ fn case_covers_all(subject: &Expr, kind: &str, arms: &[(Option<Vec<Expr>>, Stmt)
     values == (0..(1i64 << w.width)).collect()
 }
 
+/// The width of an expression, when it is known and is not an unsized literal.
+fn sized(e: &Expr, env: &Env) -> Option<u32> {
+    width_of(e, env).filter(|w: &Width| !w.flex).map(|w| w.width)
+}
+
+/// The width of a port's type, when it is a plain vector (no unpacked dimensions).
+fn port_width(dtype: &DType, dims: &[Expr]) -> Option<i64> {
+    if !dims.is_empty() {
+        return None;
+    }
+    if !(dtype.name.is_empty() || dtype.name == "logic") {
+        return None;
+    }
+    if dtype.packed.is_empty() {
+        return Some(1);
+    }
+    let mut w = 1;
+    for (msb, lsb) in &dtype.packed {
+        w *= (int_of(msb)? - int_of(lsb)?).abs() + 1;
+    }
+    Some(w)
+}
+
+/// `target = value`: the value must not be wider than the target, unless the bits dropped are the point.
+fn lint_assign(m: &Module, env: &Env, lhs: &Expr, rhs: &Expr, pos: Pos, out: &mut Vec<String>) {
+    let Some(lw) = width_of(lhs, env).map(|w| w.width) else { return };
+    let name = base(lhs).unwrap_or_else(|| text(lhs));
+    if let Expr::Num(t) = rhs {
+        if !t.contains('\'') {
+            if let Some(v) = crate::lexer::number_value(t) {
+                if v >= 0 && (64 - (v as u64).leading_zeros()) > lw {
+                    warn(out, m, pos, format!("literal {v} does not fit in {lw} bits ('{name}' is {lw} bits wide)"));
+                }
+            }
+        }
+        return;
+    }
+    let Some(rw) = sized(rhs, env) else { return };
+    if rw <= lw {
+        return;
+    }
+    if let Expr::Binary(op, a, b, _) = rhs {
+        // a shift register (`x = x << n`) and an accumulator (`x = x + y`) drop their bits on purpose
+        if (op == "<<" || op == "<<<") && same(a, lhs) {
+            return;
+        }
+        if op == "+" || op == "-" || op == "*" {
+            if op != "*" && (same(a, lhs) || same(b, lhs)) {
+                return;
+            }
+            // the operands' own widths for the explanation: an unsized literal counts as its bit length, as in the reference
+            let (wa, wb) = (width_of(a, env).map(|w| w.width), width_of(b, env).map(|w| w.width));
+            let how = match (op.as_str(), wa, wb) {
+                ("*", Some(wa), Some(wb)) => format!(" ({wa} + {wb})"),
+                (_, Some(wa), Some(wb)) if wa + 1 == rw || wb + 1 == rw => format!(" (max({wa}, {wb}) + 1)"),
+                _ => String::new(),
+            };
+            warn(out, m, pos, format!("'{name}' is {lw} bits but '{}' needs {rw} bits{how}: widen '{name}' or use .wrap() to truncate on purpose", text(rhs)));
+            return;
+        }
+    }
+    warn(
+        out,
+        m,
+        pos,
+        format!(
+            "'{name}' is {lw} bits but the value is {rw} bits wide: the upper {} bits are dropped (use .wrap() or a slice to truncate on purpose)",
+            rw - lw
+        ),
+    );
+}
+
+/// The width checks: assignments, and the connections of the instances to the ports they drive.
+fn check_widths(m: &Module, env: Option<&Env>, by_name: &HashMap<&str, &Module>, wrapped: &Wrapped, out: &mut Vec<String>) {
+    let Some(env) = env else { return };
+    let key = base_module(&m.name);
+    for it in &m.items {
+        match &it.kind {
+            ItemKind::ContAssign { lhs, rhs } => {
+                if !target_wrapped(&key, lhs, wrapped) {
+                    lint_assign(m, env, lhs, rhs, it.pos, out);
+                }
+            }
+            ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
+                for (lhs, rhs, _, pos) in assignments(body) {
+                    if !target_wrapped(&key, lhs, wrapped) {
+                        lint_assign(m, env, lhs, rhs, pos, out);
+                    }
+                }
+            }
+            ItemKind::Instance(i) => {
+                let Some(target) = by_name.get(i.module.as_str()) else { continue };
+                for c in &i.conns {
+                    let (Some(p), Some(e)) = (&c.port, &c.expr) else { continue };
+                    if wrapped.ports.contains(&(key.clone(), i.name.clone(), p.clone())) {
+                        continue;
+                    }
+                    let Some(q) = target.ports.iter().find(|q| &q.name == p) else { continue };
+                    let Some(pw) = port_width(&q.dtype, &q.dims) else { continue };
+                    if let Expr::Num(t) = e {
+                        if let Some(v) = crate::lexer::number_value(t).filter(|v| *v >= 0 && t.chars().all(|c| c.is_ascii_digit())) {
+                            if (v as u64) >> pw.min(63) != 0 {
+                                warn(out, m, it.pos, format!("port '{p}' of '{}' is {pw} bits: literal {t} does not fit", i.module));
+                            }
+                        }
+                        continue;
+                    }
+                    if let Some(ew) = sized(e, env) {
+                        if i64::from(ew) != pw {
+                            warn(out, m, it.pos, format!("port '{p}' of '{}' is {pw} bits but is connected to '{}' ({ew} bits)", i.module, text(e)));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn target_wrapped(module: &str, lhs: &Expr, wrapped: &Wrapped) -> bool {
+    parts(lhs).into_iter().filter_map(base).any(|n| wrapped.signals.contains(&(module.to_string(), n)))
+}
+
 /// A combinational block must assign each signal on every path, or a latch is inferred.
 fn check_latches(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
     for it in &m.items {
         let ItemKind::AlwaysComb(body) = &it.kind else { continue };
-        let mut all = Vec::new();
-        assignments(body, &mut all);
-        let assigned: BTreeSet<String> = all.iter().flat_map(|(lhs, _)| parts(lhs)).filter_map(base).collect();
+        let assigned: BTreeSet<String> = assignments(body).iter().flat_map(|(lhs, _, _, _)| parts(lhs)).filter_map(base).collect();
         let defined = def_assigned(body, env);
         for n in assigned.difference(&defined) {
             // a block-local temporary (a hoisted declaration) is not a signal of the design
@@ -172,16 +394,12 @@ fn check_drivers(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<Str
         match &it.kind {
             ItemKind::ContAssign { lhs, .. } => add(&mut drivers, lhs, idx, "assign".into(), it.pos),
             ItemKind::AlwaysComb(body) => {
-                let mut all = Vec::new();
-                assignments(body, &mut all);
-                for (lhs, _) in all {
+                for (lhs, _, _, _) in assignments(body) {
                     add(&mut drivers, lhs, idx, "always_comb".into(), it.pos);
                 }
             }
             ItemKind::Always { body, .. } => {
-                let mut all = Vec::new();
-                assignments(body, &mut all);
-                for (lhs, _) in all {
+                for (lhs, _, _, _) in assignments(body) {
                     add(&mut drivers, lhs, idx, "always_ff".into(), it.pos);
                 }
             }
@@ -254,16 +472,12 @@ fn check_process_style(m: &Module, out: &mut Vec<String>) {
     for (idx, it) in m.items.iter().enumerate() {
         match &it.kind {
             ItemKind::AlwaysComb(body) => {
-                let mut all = Vec::new();
-                assignments(body, &mut all);
-                if all.iter().any(|(_, nb)| *nb) {
-                    warn(out, m, it.pos, "non-blocking assignment (<=) inside always_comb: use =".into());
+                for (_, _, _, pos) in assignments(body).into_iter().filter(|(_, _, nb, _)| *nb) {
+                    warn(out, m, pos, "non-blocking assignment (<=) inside always_comb: use =".into());
                 }
             }
             ItemKind::Always { body, .. } => {
-                let mut all = Vec::new();
-                assignments(body, &mut all);
-                for (lhs, nonblocking) in all {
+                for (lhs, _, nonblocking, pos) in assignments(body) {
                     if nonblocking {
                         continue;
                     }
@@ -272,7 +486,7 @@ fn check_process_style(m: &Module, out: &mut Vec<String>) {
                         readers.get(n.as_str()).is_some_and(|r| r.iter().any(|&j| j != idx)) || outputs.contains(n.as_str())
                     });
                     if let Some(n) = shared {
-                        warn(out, m, it.pos, format!("blocking assignment (=) to '{n}' inside a clocked block while another process reads it (a race): use <="));
+                        warn(out, m, pos, format!("blocking assignment (=) to '{n}' inside a clocked block while another process reads it (a race): use <="));
                     }
                 }
             }

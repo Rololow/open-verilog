@@ -145,7 +145,8 @@ pub enum ItemKind {
     /// `fsm Enum state = INIT { defaults; LABEL: { ... } }`: a state register and its next-state logic.
     Fsm { enum_name: String, name: String, init: String, defaults: Vec<Stmt>, arms: Vec<(String, Stmt)> },
     /// A pure function `fn name(params) [-> type] { return body; }`; calls are inlined.
-    Fn { name: String, params: Vec<String>, ptypes: Vec<DType>, ret: Option<DType>, body: Expr },
+    /// `override` (the position of its `fn`): the function must replace one of the base module's.
+    Fn { name: String, params: Vec<String>, ptypes: Vec<DType>, ret: Option<DType>, body: Expr, override_at: Option<(usize, usize)> },
     /// A procedural function: statements, inlined at each statement-level call (the parser expands them).
     Proc { name: String, params: Vec<String>, body: Vec<Stmt> },
     /// `memmap io "desc" { DEV @ base size n [irq k [= line]] ... }`: the devices of a bus, placed in the module.
@@ -185,6 +186,10 @@ pub struct File {
     pub traits: Vec<TraitDef>,
     /// Modules of the standard library: emitted only where they are instantiated.
     pub library: Vec<String>,
+    /// The packages the sources define (`package Name; ... endpackage`).
+    pub packages: Vec<String>,
+    /// The imports (`import Pkg::*;`): the package, where it is written, and the file.
+    pub imports: Vec<(String, (usize, usize), String)>,
     /// Instruction sets: the formats of the instructions, with their fields.
     pub isas: Vec<IsaDef>,
     /// `test "name" for Module<args> { ... }`: a test of the design (its testbench is written by --emit-tests).
