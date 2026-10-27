@@ -21,13 +21,30 @@ pub fn questa(dir: &Path, program: &str, args: &[&str]) -> String {
 /// Compiles the files (`vlog` with `args`, which name them) into a fresh library and runs `top` (`vsim -c`): its
 /// standard output. The simulation's own exit code is not checked: a failing check is reported in the output.
 pub fn simulate(dir: &Path, args: &[&str], top: &str) -> String {
+    simulate_with(dir, args, &[], top)
+}
+
+/// As `simulate`, with options for `vsim` before the top module (the generics: `-gN=3`).
+pub fn simulate_with(dir: &Path, args: &[&str], vsim_options: &[&str], top: &str) -> String {
     // the Questa licence allows one run at a time: the tests of a binary run in parallel, so the runs wait for each other
     static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
     let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     questa(dir, "vlib", &["work"]);
     questa(dir, "vlog", args);
-    let out = Command::new("vsim").args(["-c", top, "-do", "run -all; quit -f"]).current_dir(dir).output().expect("vsim runs");
-    String::from_utf8_lossy(&out.stdout).into_owned()
+    let mut vsim: Vec<&str> = vec!["-c"];
+    vsim.extend_from_slice(vsim_options);
+    vsim.extend_from_slice(&[top, "-do", "run -all; quit -f"]);
+    // the nodelocked licence refuses a second session while one is still closing: that is retried after a pause
+    let mut out = String::new();
+    for attempt in 0..5 {
+        let run = Command::new("vsim").args(&vsim).current_dir(dir).output().expect("vsim runs");
+        out = String::from_utf8_lossy(&run.stdout).into_owned();
+        if !out.contains("License checkout has been disallowed") || attempt == 4 {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    }
+    out
 }
 
 /// A scratch folder for one test, empty.

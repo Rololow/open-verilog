@@ -139,11 +139,14 @@ pub(super) fn expand_procs(items: Vec<Item>) -> Vec<Item> {
     let mut procs: HashMap<String, Proc> = HashMap::new();
     let mut rest = Vec::new();
     for it in items {
+        let pos = it.pos;
         match it.kind {
+            // the definition stays, so that a use of it as a value can be named (its calls are expanded below)
             ItemKind::Proc { name, params, body } => {
-                procs.insert(name, (params, body));
+                procs.insert(name.clone(), (params.clone(), body.clone()));
+                rest.push(Item { pos, kind: ItemKind::Proc { name, params, body } });
             }
-            _ => rest.push(it),
+            kind => rest.push(Item { pos, kind }),
         }
     }
     if !procs.is_empty() {

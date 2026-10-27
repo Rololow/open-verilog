@@ -437,6 +437,14 @@ pub fn elaborate(source: &File, file: &str, asserts: bool, cover: bool, top: Opt
     globals.bind_int("true", 1);
     globals.bind_int("false", 0);
     globals.set_configs(config::table(&source.configs));
+    // a config named without a parameter (`Reg<Cfg.w>`): its fields are values of the design, with its own defaults
+    for def in source.configs.iter().filter(|d| d.source.is_none()) {
+        if let Ok(values) = config::evaluate(&def.name, &globals, &[], &def.origin, def.pos) {
+            for (field, value) in values {
+                globals.define_global_expr(&format!("{}.{field}", def.name), value);
+            }
+        }
+    }
     // a config from a manifest: its entries are values named `Config.entry` (lists of records, ...)
     for def in source.configs.iter().filter(|d| d.source.is_some()) {
         let rel = def.source.as_deref().unwrap_or_default();
@@ -459,6 +467,15 @@ pub fn elaborate(source: &File, file: &str, asserts: bool, cover: bool, top: Opt
             globals.bind_int(&d.name, v);
         }
     }
+    let top_fns = source.fns.iter().filter_map(|k| match k {
+        ItemKind::Fn { name, params, ret, body, .. } => {
+            Some((name.clone(), FnDef { params: params.clone(), ret: ret.clone(), body: body.clone() }))
+        }
+        _ => None,
+    });
+    globals.set_fns(top_fns.collect());
+    // the top-level values are folded where the functions are known: a value that calls a function folds it now, and does
+    // not keep the call for a module whose port of the same name would hide the function
     for (name, expr) in &source.values {
         match fold_expr(expr, &globals) {
             Expr::List(items) => globals.define_global_list(name, items),
@@ -485,13 +502,6 @@ pub fn elaborate(source: &File, file: &str, asserts: bool, cover: bool, top: Opt
     globals.set_isas(isas);
     // the instruction sets in declaration order, for the SV package, the Python encoder and the documentation
     let isa_list = source.isas.iter().map(|def| isa::build(def, &globals, file)).collect::<Result<Vec<_>>>()?;
-    let top_fns = source.fns.iter().filter_map(|k| match k {
-        ItemKind::Fn { name, params, ret, body, .. } => {
-            Some((name.clone(), FnDef { params: params.clone(), ret: ret.clone(), body: body.clone() }))
-        }
-        _ => None,
-    });
-    globals.set_fns(top_fns.collect());
     let mut design = Design {
         groups: Vec::new(),
         globals,
@@ -557,6 +567,12 @@ pub fn elaborate(source: &File, file: &str, asserts: bool, cover: bool, top: Opt
     let mut all_tests = source.tests.clone();
     for l in &source.test_loops {
         expand_test_loop(l, &[], &globals, file, &mut all_tests)?;
+    }
+    // a test's name is its line in the report: two of one name would report under one name
+    for (k, t) in all_tests.iter().enumerate() {
+        if let Some(earlier) = all_tests[..k].iter().find(|u| u.name == t.name) {
+            return Err(Error::new(format!("two tests are named \"{}\" (first at line {})", t.name, earlier.pos.0), file, t.pos.0, t.pos.1));
+        }
     }
     for t in &all_tests {
         let inst = Instance {
@@ -741,11 +757,23 @@ impl<'a> Design<'a> {
             }
         }
         if let Some((name, pos)) = unknown_identifier(&module) {
+            // a `fn` of the module used as a value: a fn of statements has no value (it is called as a statement)
+            if m.items.iter().any(|it| matches!(&it.kind, ItemKind::Fn { name: n, .. } | ItemKind::Proc { name: n, .. } if *n == name)) {
+                return Err(Error::new(
+                    format!("a fn of statements has no `return` and is called as a statement: '{name}' is used as a value"),
+                    ctx_file(m, self.file),
+                    pos.0,
+                    pos.1,
+                ));
+            }
             let hint = suggest(&name, known_names(&module));
             return Err(Error::new(format!("unknown identifier '{name}'{hint}"), ctx_file(m, self.file), pos.0, pos.1));
         }
         if let Some((port, pos)) = driven_input(&module) {
             return Err(Error::new(format!("input port '{port}' is driven inside the module"), ctx_file(m, self.file), pos.0, pos.1));
+        }
+        if let Some((name, pos)) = written_by_ff_and_initial(&module) {
+            return Err(Error::new(format!("'{name}' is written by an always_ff and by an initial block"), ctx_file(m, self.file), pos.0, pos.1));
         }
         if let Some(env) = self.envs.get_mut(name) {
             env.set_vec_elements(elements);
@@ -951,6 +979,9 @@ impl<'a> Design<'a> {
         }
         let mut items = Vec::new();
         self.elab_items(&m.items, &env, &ctx, &[], &mut items)?;
+        if fold::take_fold_overflow() {
+            return Err(ctx.err("a fold builds more than 200000 terms: its value uses its accumulator more than once, so it doubles at each step"));
+        }
         self.elab_items(&monitor_items, &env, &ctx, &[], &mut items)?;
         // the coverage of the case statements: sticky flags, printed at the end of the simulation (`ovc cover`)
         if let Some(lines) = coverage_lines(&env, env.cover_items(), m.ports.iter().any(|p| p.name == "clk")) {
@@ -1043,7 +1074,13 @@ impl<'a> Design<'a> {
         };
         if m.kind == "pipeline" {
             let directives = pipeline::directives(m)?;
-            let lowered = pipeline::lower(&module, self.file, self.asserts, &directives)?;
+            // the flattened signals of the bundle ports: `o_ready` of `master Stream o`
+            let bundle_signals: Vec<String> = env
+                .bundle_refs()
+                .iter()
+                .flat_map(|b| b.fields.iter().map(move |(f, _)| format!("{}_{f}", b.prefix)))
+                .collect();
+            let lowered = pipeline::lower(&module, self.file, self.asserts, &directives, &bundle_signals)?;
             self.pipelines.push(lowered.table);
             self.warnings.extend(lowered.warnings);
             return Ok(lowered.module);
@@ -1478,7 +1515,12 @@ fn expand_test_loop(l: &crate::ast::TestLoop, binds: &[(String, Expr)], globals:
     };
     for row in rows {
         let mut inner = binds.to_vec();
-        inner.push((l.var.clone(), row));
+        if l.names.is_empty() {
+            inner.push((l.var.clone(), row));
+        } else {
+            let Expr::List(items) = &row else { return Err(fail("the rows of a test loop with (a, b) names are lists".into())) };
+            inner.extend(l.names.iter().cloned().zip(items.iter().cloned()));
+        }
         let names: Vec<String> = inner.iter().map(|(n, _)| n.clone()).collect();
         let values: Vec<Expr> = inner.iter().map(|(_, v)| v.clone()).collect();
         let sub = |e: &Expr| fold_expr(&substitute(e, &names, &values), globals);
@@ -1919,6 +1961,50 @@ fn unknown_identifier(module: &Module) -> Option<(String, Pos)> {
     // the instances of a loop are `m_0`, `m_1`, ...: the family `m` is a name too (`m[1].leaf` reaches into one)
     let family = |name: &str| module.items.iter().any(|item| matches!(&item.kind, ItemKind::Instance(i) if i.name.starts_with(&format!("{name}_"))));
     used.into_iter().find(|(name, _)| !name.starts_with('$') && !known.contains(name) && !family(name))
+}
+
+/// The variable a statement assigns, when it is a name or an element of one.
+fn assigned_name(lhs: &Expr) -> Option<String> {
+    match lhs {
+        Expr::Ident(name, _) => Some(name.clone()),
+        Expr::Index(base, _) => assigned_name(base),
+        _ => None,
+    }
+}
+
+/// The variables a statement assigns.
+fn assigned_in_stmt(s: &Stmt, out: &mut Vec<String>) {
+    match s {
+        Stmt::Assign { lhs, .. } => out.extend(assigned_name(lhs)),
+        Stmt::Block(stmts) => stmts.iter().for_each(|x| assigned_in_stmt(x, out)),
+        Stmt::If { then, els, .. } => {
+            assigned_in_stmt(then, out);
+            if let Some(e) = els {
+                assigned_in_stmt(e, out);
+            }
+        }
+        Stmt::For { body, .. } => assigned_in_stmt(body, out),
+        Stmt::Case { arms, .. } => arms.iter().for_each(|(_, body)| assigned_in_stmt(body, out)),
+        _ => {}
+    }
+}
+
+/// A variable written by an `always_ff` and by an `initial` block: the simulator takes both, and Questa rejects it.
+fn written_by_ff_and_initial(module: &Module) -> Option<(String, Pos)> {
+    let mut ff: Vec<(String, Pos)> = Vec::new();
+    let mut init: Vec<String> = Vec::new();
+    for item in &module.items {
+        match &item.kind {
+            ItemKind::Always { body, keyword, .. } if keyword == "always_ff" => {
+                let mut names = Vec::new();
+                assigned_in_stmt(body, &mut names);
+                ff.extend(names.into_iter().map(|n| (n, item.pos)));
+            }
+            ItemKind::Initial(body) => assigned_in_stmt(body, &mut init),
+            _ => {}
+        }
+    }
+    ff.into_iter().find(|(n, _)| init.contains(n))
 }
 
 /// Visits every expression of an item: its statements and declarations, and the value of a module-level `val`.

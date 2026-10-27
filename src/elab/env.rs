@@ -391,6 +391,11 @@ impl Env {
         self.vec_elements.get(name).cloned()
     }
 
+    /// The bundle references of the module: each port or local bundle, with its flattened signals.
+    pub fn bundle_refs(&self) -> Vec<BundleRef> {
+        self.bundle_of.values().cloned().collect()
+    }
+
     pub fn set_bundle_of(&mut self, bundle_of: HashMap<String, BundleRef>) {
         self.bundle_of = Rc::new(bundle_of);
         // the aliases of a module are its own

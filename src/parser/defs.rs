@@ -162,7 +162,12 @@ impl Parser {
     pub(super) fn parse_test_loop(&mut self) -> Result<crate::ast::TestLoop> {
         let pos = (self.tok().line, self.tok().col);
         self.expect("for")?;
-        let var = self.ident()?;
+        // `for (a, b) in rows`: each row's elements are named
+        let (var, names) = if self.at("(") && self.peek(1).kind == Kind::Ident && self.peek(2).text == "," {
+            (format!("ov_row_{}_{}", pos.0, pos.1), self.tuple_names()?)
+        } else {
+            (self.ident()?, Vec::new())
+        };
         self.expect("in")?;
         let iter = self.parse_expr(0)?;
         self.expect("{")?;
@@ -179,7 +184,7 @@ impl Parser {
                 return Err(self.fail(format!("a test or a loop is expected here, found '{}'", self.found())));
             }
         }
-        Ok(crate::ast::TestLoop { var, iter, tests, loops, pos })
+        Ok(crate::ast::TestLoop { var, names, iter, tests, loops, pos })
     }
 
     /// `probe name on Module when (cond) [limit N] { statements }`

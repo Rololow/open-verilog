@@ -35,8 +35,9 @@ fn text(e: &Expr) -> Result<String> {
         Expr::Ident(name, _) => name.clone(),
         Expr::Unary(op, arg) => {
             let mut a = expr(arg, UNARY_PREC, false)?;
-            if matches!(**arg, Expr::Unary(..)) {
-                a = format!("({a})"); // SV: a unary operand must be a primary
+            // SV: a unary operand must be a primary, so `|-9` and `^-7` need their parentheses
+            if matches!(**arg, Expr::Unary(..)) || a.starts_with(['-', '+']) {
+                a = format!("({a})");
             }
             format!("{op}{a}")
         }

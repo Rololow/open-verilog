@@ -14,6 +14,44 @@ pub fn int_of(e: &Expr) -> Option<i64> {
     }
 }
 
+/// The truth value of an operand of `&&` or `||`: 0 or 1, not the operand itself (`2 && x` is `x != 0`).
+fn truth(e: Expr, env: &Env) -> Expr {
+    if let Some(v) = int_of(&e) {
+        return num((v != 0) as i64);
+    }
+    let logical = matches!(&e, Expr::Binary(op, ..) if matches!(op.as_str(), "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||"))
+        || matches!(&e, Expr::Unary(op, _) if op == "!");
+    // a one-bit value is already 0 or 1
+    if logical || width_of(&e, env).is_some_and(|w| w.width == 1) {
+        e
+    } else {
+        Expr::Binary("!=".into(), boxed(e), boxed(num(0)), (0, 0))
+    }
+}
+
+/// The most terms a fold may build (see `take_fold_overflow`).
+const FOLD_TERMS: usize = 200_000;
+
+thread_local! {
+    /// Set when a fold grew past `FOLD_TERMS`: the module being elaborated is refused.
+    static FOLD_OVERFLOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a fold of the module just elaborated grew past its term limit (and clears the mark).
+pub(crate) fn take_fold_overflow() -> bool {
+    FOLD_OVERFLOW.with(|f| f.replace(false))
+}
+
+/// The number of terms of an expression, as a tree (a shared sub-expression counts at each use).
+fn term_count(e: &Expr) -> usize {
+    let n = std::cell::Cell::new(0usize);
+    let _ = crate::pipeline::rewrite::map_expr(e, &mut |_| {
+        n.set(n.get() + 1);
+        Ok(None)
+    });
+    n.get()
+}
+
 fn num(v: i64) -> Expr {
     Expr::Num(v.to_string())
 }
@@ -79,13 +117,13 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
             match (op.as_str(), int_of(&l)) {
                 ("&&", Some(0)) => return num(0),
                 ("||", Some(v)) if v != 0 => return num(1),
-                ("&&", Some(_)) | ("||", Some(0)) => return r,
+                ("&&", Some(_)) | ("||", Some(0)) => return truth(r, env),
                 _ => {}
             }
-            // a constant right side decides them too: `x && 1` is `x`, `x || 0` is `x`, `x && 0` is 0, `x || 1` is 1
+            // a constant right side decides them too: `x && 1` is `x != 0`, `x || 0` is `x != 0`, `x && 0` is 0, `x || 1` is 1
             match (op.as_str(), int_of(&r)) {
-                ("&&", Some(v)) if v != 0 => return l,
-                ("||", Some(0)) => return l,
+                ("&&", Some(v)) if v != 0 => return truth(l, env),
+                ("||", Some(0)) => return truth(l, env),
                 ("&&", Some(0)) => return num(0),
                 ("||", Some(v)) if v != 0 => return num(1),
                 _ => {}
@@ -479,8 +517,11 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                 }
             }
             if let Expr::Ident(name, _) = &**func {
-                if let Some(def) = env.fn_def(name).filter(|d| d.params.len() == args.len()) {
-                    return inline(name, def, &args, env);
+                // a signal of the module hides a function of the same name (the port wins)
+                if env.signal(name).is_none() {
+                    if let Some(def) = env.fn_def(name).filter(|d| d.params.len() == args.len()) {
+                        return inline(name, def, &args, env);
+                    }
                 }
             }
             let values: Option<Vec<i64>> = args.iter().map(int_of).collect();
@@ -598,7 +639,24 @@ fn exact_operands(e: &Expr, env: &Env) -> Expr {
         Expr::Binary(op, l, r, pos) if matches!(op.as_str(), ">>" | ">>>") => {
             Expr::Binary(op.clone(), boxed(exact_operand(*l.clone(), env)), r.clone(), *pos)
         }
+        // a signed operand of a sum or difference is widened to the sum's width: SV would make the sum unsigned and
+        // extend the signed operand with zeros (`acc + $signed(a) * $signed(b)`)
+        Expr::Binary(op, l, r, pos) if matches!(op.as_str(), "+" | "-") => {
+            let Some(bits) = wrap_width(e, env) else { return e.clone() };
+            let widen = |x: &Expr| if has_signed(x) { Expr::Cast(boxed(num(i64::from(bits))), boxed(x.clone())) } else { x.clone() };
+            Expr::Binary(op.clone(), boxed(widen(l)), boxed(widen(r)), *pos)
+        }
         other => other.clone(),
+    }
+}
+
+/// Whether an expression has a `$signed(...)` operand in it.
+fn has_signed(e: &Expr) -> bool {
+    match e {
+        Expr::Call(func, _) => matches!(&**func, Expr::Ident(name, _) if name == "$signed"),
+        Expr::Binary(_, l, r, _) => has_signed(l) || has_signed(r),
+        Expr::Unary(_, a) => has_signed(a),
+        _ => false,
     }
 }
 
@@ -746,6 +804,11 @@ fn list_method(base: &Expr, method: &str, args: &[Expr], env: &Env, pos: Pos) ->
             for item in items {
                 let args = [acc, item.clone()];
                 acc = fold_expr(&substitute(body, &[acc_name.clone(), x_name.clone()], &args), env);
+                // a value that uses its accumulator twice doubles at each step: refused once it is too big
+                if term_count(&acc) > FOLD_TERMS {
+                    FOLD_OVERFLOW.with(|f| f.set(true));
+                    break;
+                }
             }
             Some(acc)
         }

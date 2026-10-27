@@ -74,7 +74,7 @@ fn default_reset(ports: &HashMap<&str, &Port>) -> Option<(String, bool)> {
 }
 
 /// Lowers a pipeline module to a plain module. The clock and reset are the directives', else the ports'.
-pub fn lower(source: &Module, file: &str, asserts: bool, directives: &Directives) -> Result<Lowered> {
+pub fn lower(source: &Module, file: &str, asserts: bool, directives: &Directives, bundle_signals: &[String]) -> Result<Lowered> {
     let scalar = arrays::scalarize(source, file)?;
     let m = &scalar;
     let err = |pos: Pos, msg: String| Error::new(msg, file, pos.0, pos.1);
@@ -118,7 +118,7 @@ pub fn lower(source: &Module, file: &str, asserts: bool, directives: &Directives
     let control_names = [clock.as_str(), reset_name.as_str(), "valid_in", "valid_out", "ready_out"];
     let owners = find_owners(m, &stages, &ports, &control_names).map_err(|(pos, msg)| err(pos, msg))?;
 
-    let mut lowering = Lowering { stages: &stages, owners: &owners, uses: BTreeMap::new(), fires: BTreeSet::new(), data_inputs: Vec::new(), file };
+    let mut lowering = Lowering { stages: &stages, owners: &owners, uses: BTreeMap::new(), fires: BTreeSet::new(), data_inputs: Vec::new(), file, bundle_signals };
     let (body, controls) = lowering.body(m)?;
     let n = stages.len();
     let names: Vec<&str> = stages.iter().map(|s| s.name).collect();
@@ -336,6 +336,8 @@ struct Lowering<'a, 'm> {
     /// input ports read unqualified in a stage, in order of first use
     data_inputs: Vec<String>,
     file: &'m str,
+    /// the signals of the bundle ports (`o_ready`): read as they are, not as the instruction's input
+    bundle_signals: &'m [String],
 }
 
 impl<'a> Lowering<'a, '_> {
@@ -378,10 +380,14 @@ impl<'a> Lowering<'a, '_> {
         for it in &m.items {
             match &it.kind {
                 ItemKind::Stage { .. } => {}
+                // a procedure is compile-time: its calls are expanded where they are made
+                ItemKind::Proc { .. } => {}
                 // an array no stage drives stays an array (scalarized arrays are already split)
                 ItemKind::Decl(_) => body.push(it.clone()),
                 // a pure function is compile-time: it is inlined at its calls
                 ItemKind::Fn { .. } => body.push(it.clone()),
+                // the checks and the coverage the module generated: kept as they are
+                ItemKind::Raw(_) => body.push(it.clone()),
                 // an instance outside the stages: its connections may name stage values
                 ItemKind::Instance(inst) => {
                     let mut conns = Vec::with_capacity(inst.conns.len());
@@ -410,6 +416,8 @@ impl<'a> Lowering<'a, '_> {
                     };
                     return Err(Error::new(format!("'{word}' must be inside a stage"), self.file, it.pos.0, it.pos.1));
                 }
+                // a comment is no hardware
+                ItemKind::Comment(_) => {}
                 other => {
                     return Err(Error::new(format!("{} is not supported in a pipeline yet", item_word(other)), self.file, it.pos.0, it.pos.1));
                 }
@@ -453,7 +461,17 @@ impl<'a> Lowering<'a, '_> {
                 Ok(Some(self.value_in(field, sig.stage, t)))
             }
             Expr::Ident(name, at) => {
+                // the valid bit of the stage a statement is in
+                if name == "valid" && !self.owners.contains_key(name) {
+                    if let Some(m) = cur {
+                        return Ok(Some(Expr::Ident(format!("ov_valid_{}", self.stages[m].name), *at)));
+                    }
+                }
                 let (Some(m), Some(sig)) = (cur, self.owners.get(name)) else { return Ok(None) };
+                // a bundle port is read as it is now: the value of the producer, not one carried from the instruction
+                if sig.input && self.bundle_signals.contains(name) {
+                    return Ok(Some(Expr::Ident(name.clone(), *at)));
+                }
                 if sig.input && sig.stage == 0 && m > 0 {
                     let here = self.stages[m].name;
                     return Err((*at, format!(

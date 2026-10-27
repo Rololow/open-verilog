@@ -77,6 +77,17 @@ pub fn parse_file(src: &str, file: &str) -> Result<File> {
     Ok(out)
 }
 
+/// One expression, as written in `.ov` (the whole text is the expression).
+pub fn parse_expr_text(src: &str, file: &str) -> Result<crate::ast::Expr> {
+    let toks = lex(src, file)?;
+    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new() };
+    let e = p.parse_expr(0)?;
+    if p.tok().kind != Kind::Eof {
+        return Err(p.fail(format!("unexpected '{}' after the expression", p.tok().text)));
+    }
+    Ok(e)
+}
+
 /// A type on the command line, such as the top module with its arguments: `DarkRiscv<DarkCfg with { csr = true }>`.
 pub fn parse_top(src: &str, file: &str) -> Result<crate::ast::DType> {
     let toks = lex(src, file)?;

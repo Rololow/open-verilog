@@ -238,7 +238,7 @@ fn merge(design: &mut File, unit: File) -> Result<()> {
     for m in &unit.modules {
         if let Some(prev) = design.modules.iter().find(|p| p.name == m.name) {
             return Err(Error::new(
-                format!("module '{}' is already defined in {}", m.name, prev.origin),
+                format!("module '{}' is defined twice (first in {})", m.name, prev.origin),
                 &m.origin,
                 m.pos.0,
                 m.pos.1,

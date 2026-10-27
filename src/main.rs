@@ -36,6 +36,10 @@ struct Args {
     top: Option<String>,
     build: bool,
     root: Option<String>,
+    /// `-f LIST`: the inputs of `build`, one path per line (`//` comments).
+    filelist: Option<String>,
+    /// `--in-place`: the output of each source goes next to it, and `ovc_files.f` lists them.
+    in_place: bool,
 }
 
 fn parse_args(argv: Vec<String>) -> Result<Args, String> {
@@ -47,6 +51,8 @@ fn parse_args(argv: Vec<String>) -> Result<Args, String> {
             "build" => args.build = true,
             "-o" => args.output = Some(value("-o")?),
             "--root" => args.root = Some(value("--root")?),
+            "-f" | "--filelist" => args.filelist = Some(value("-f")?),
+            "--in-place" => args.in_place = true,
             "--emit-tests" => args.emit_tests = Some(value("--emit-tests")?),
             "--emit-c" => args.emit_c = Some(value("--emit-c")?),
             "--emit-doc" => args.emit_doc = Some(value("--emit-doc")?),
@@ -65,7 +71,7 @@ fn parse_args(argv: Vec<String>) -> Result<Args, String> {
             _ => args.inputs.push(arg),
         }
     }
-    if args.inputs.is_empty() {
+    if args.inputs.is_empty() && args.filelist.is_none() {
         return Err("no input".into());
     }
     Ok(args)
@@ -79,7 +85,7 @@ fn collect(paths: &[String]) -> Result<Vec<PathBuf>, String> {
         for p in entries {
             if p.is_dir() {
                 walk(&p, out)?;
-            } else if p.extension().is_some_and(|e| e == "ov") {
+            } else if p.extension().is_some_and(|e| e == "ov" || e == "sv") {
                 out.push(p);
             }
         }
@@ -161,8 +167,36 @@ fn parse_units(paths: &[PathBuf]) -> Result<Vec<(String, String, File)>, String>
     results.into_iter().collect()
 }
 
+/// The inputs of a file list (`-f`): one path per line, `//` comments. An option (a line with `+`) is refused: the
+/// sources of `build` are not preprocessed.
+fn filelist_inputs(list: &str) -> Result<Vec<String>, String> {
+    let text = std::fs::read_to_string(list).map_err(|e| format!("ovc: {list}: {e}"))?;
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.split("//").next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('+') {
+            return Err(format!("ovc: {list}: '{line}' is not supported by ovc build (the sources are not preprocessed)"));
+        }
+        out.push(line.to_string());
+    }
+    Ok(out)
+}
+
 fn run(args: Args) -> Result<(), String> {
-    let paths = collect(&args.inputs)?;
+    let inputs = match &args.filelist {
+        Some(list) => filelist_inputs(list)?,
+        None => args.inputs.clone(),
+    };
+    let found = collect(&inputs)?;
+    // `build` also takes the SystemVerilog files it finds: they are copied into the project as they are
+    let (sv_files, paths): (Vec<PathBuf>, Vec<PathBuf>) = if args.build {
+        found.into_iter().partition(|p| p.extension().is_some_and(|e| e == "sv"))
+    } else {
+        (Vec::new(), found)
+    };
     if paths.is_empty() {
         return Err("no .ov file found".into());
     }
@@ -244,7 +278,7 @@ fn run(args: Args) -> Result<(), String> {
         std::fs::write(path, text.join("\n")).map_err(|e| format!("ovc: {path}: {e}"))?;
     }
     if args.build {
-        return write_project(&args, &compiled);
+        return write_project(&args, &compiled, &sv_files);
     }
     match &args.output {
         Some(path) => std::fs::write(path, &compiled.sv).map_err(|e| format!("ovc: {path}: {e}")),
@@ -256,41 +290,65 @@ fn run(args: Args) -> Result<(), String> {
 }
 
 /// `ovc build`: one `.sv` per source file under the output folder, and the file list.
-fn write_project(args: &Args, compiled: &ovc::Compiled) -> Result<(), String> {
+fn write_project(args: &Args, compiled: &ovc::Compiled, sv_files: &[PathBuf]) -> Result<(), String> {
     let out_dir = PathBuf::from(args.output.clone().unwrap_or_else(|| "out".into()));
     let root = PathBuf::from(args.root.clone().unwrap_or_else(|| ".".into()));
     let cwd = std::env::current_dir().map_err(|e| format!("ovc: {e}"))?;
     let root_abs = cwd.join(&root);
-    let mut list = Vec::new();
-    // the packages first: every file that uses a packed struct type comes after them in the list
-    if !compiled.packages.is_empty() {
-        let target = out_dir.join("_packages.sv");
-        std::fs::create_dir_all(&out_dir).map_err(|e| format!("ovc: {}: {e}", out_dir.display()))?;
-        std::fs::write(&target, &compiled.packages).map_err(|e| format!("ovc: {}: {e}", target.display()))?;
-        list.push(list_entry(&target));
-    }
+    // the folder of the packages, the library and the file list: the output folder, or the working folder in place
+    let base = if args.in_place { cwd.clone() } else { out_dir.clone() };
+    // where a source's output goes: next to it in place, else mirrored under the output folder
+    let output_of = |origin: &str| -> Result<PathBuf, String> {
+        let source = cwd.join(origin);
+        if args.in_place {
+            return Ok(source);
+        }
+        let inside = source.strip_prefix(&root_abs).map_err(|_| format!("ovc: {origin}: not under the root {} (use --root)", root.display()))?;
+        Ok(out_dir.join(inside))
+    };
+    // one entry per source, in the order of the sources: the translated ones and the SystemVerilog copied as they are
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
     for (origin, text) in &compiled.by_origin {
-        if origin.starts_with('<') {
+        // a file without hardware (a config alone) has no output
+        if origin.starts_with('<') || text.trim().is_empty() {
             continue;
         }
-        // the folders of the source below the root, so the output mirrors them under the output folder
-        let source = cwd.join(origin);
-        let inside = source.strip_prefix(&root_abs).map_err(|_| format!("ovc: {origin}: not under the root {} (use --root)", root.display()))?;
-        let target = out_dir.join(inside.with_extension("sv"));
+        let target = output_of(origin)?.with_extension("sv");
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("ovc: {}: {e}", parent.display()))?;
         }
         std::fs::write(&target, text).map_err(|e| format!("ovc: {}: {e}", target.display()))?;
+        files.push((origin.clone(), target));
+    }
+    for sv in sv_files {
+        let origin = sv.strip_prefix(&cwd).unwrap_or(sv).to_string_lossy().replace('\\', "/");
+        let target = output_of(&origin)?;
+        if target != *sv {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("ovc: {}: {e}", parent.display()))?;
+            }
+            std::fs::copy(sv, &target).map_err(|e| format!("ovc: {}: {e}", target.display()))?;
+        }
+        files.push((origin, target));
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut list = Vec::new();
+    // the packages first: every file that uses a packed struct type comes after them in the list
+    if !compiled.packages.is_empty() {
+        let target = base.join("_packages.sv");
+        std::fs::create_dir_all(&base).map_err(|e| format!("ovc: {}: {e}", base.display()))?;
+        std::fs::write(&target, &compiled.packages).map_err(|e| format!("ovc: {}: {e}", target.display()))?;
         list.push(list_entry(&target));
     }
-    if let Some((_, text)) = compiled.by_origin.iter().find(|(o, _)| o.starts_with('<') && o.as_str() == "<stdlib>") {
-        let target = out_dir.join("_library.sv");
+    list.extend(files.iter().map(|(_, target)| list_entry(target)));
+    if let Some((_, text)) = compiled.by_origin.iter().find(|(o, _)| o.as_str() == "<stdlib>") {
+        let target = base.join("_library.sv");
         std::fs::write(&target, text).map_err(|e| format!("ovc: {}: {e}", target.display()))?;
         list.push(list_entry(&target));
     }
-    let file_list = out_dir.join("files.f");
+    let file_list = if args.in_place { cwd.join("ovc_files.f") } else { base.join("files.f") };
     std::fs::write(&file_list, list.join("\n") + "\n").map_err(|e| format!("ovc: {}: {e}", file_list.display()))?;
-    eprintln!("ovc: {} file(s) -> {}; file list: {}", list.len(), out_dir.display(), file_list.display());
+    eprintln!("ovc: {} file(s) -> {}; file list: {}", list.len(), base.display(), file_list.display());
     Ok(())
 }
 

@@ -255,6 +255,8 @@ pub struct TestDef {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestLoop {
     pub var: String,
+    /// `for (a, b) in rows`: the names of the elements of each row (empty for a single name).
+    pub names: Vec<String>,
     pub iter: Expr,
     pub tests: Vec<TestDef>,
     pub loops: Vec<TestLoop>,
