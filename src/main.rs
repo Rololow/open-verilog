@@ -8,7 +8,8 @@ use ovc::ast::File;
 use ovc::error::Error;
 
 const USAGE: &str = "\
-usage: ovc FILE.ov... [-o OUT.sv] [--emit-tests TB.sv] [--emit-probes P.sv] [--emit-isa-sv P.sv] [--emit-isa-py P.py]
+usage: ovc --version
+       ovc FILE.ov... [-o OUT.sv] [--emit-tests TB.sv] [--emit-probes P.sv] [--emit-isa-sv P.sv] [--emit-isa-py P.py]
              [--emit-doc DOC.md] [--dump-pipeline] [--no-asserts] [--werror]
        ovc build PATH... [-o OUT_DIR] [--root DIR]
 
@@ -107,6 +108,11 @@ fn main() -> ExitCode {
     if argv.first().map(String::as_str) == Some("cover") {
         let code = ovc::cover::main(&argv[1..]);
         return ExitCode::from(u8::try_from(code).unwrap_or(2));
+    }
+    // `ovc --version`: the version of this build
+    if argv.len() == 1 && matches!(argv[0].as_str(), "--version" | "-V") {
+        println!("ovc {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
     }
     let args = match parse_args(argv) {
         Ok(a) => a,
