@@ -941,6 +941,14 @@ impl<'a> Design<'a> {
         if let Some(msg) = select_past_width(&m.items, &env).or_else(|| view_width_error(&m.items, &env)) {
             return Err(ctx.err(msg));
         }
+        // a port is driven from outside: only a bundle of the module itself can be tied off
+        for it in &m.items {
+            if let ItemKind::TieOff(Expr::Ident(name, _)) = &it.kind {
+                if m.ports.iter().any(|p| &p.name == name) {
+                    return Err(ctx.at(it.pos).err("tie_off() takes a bundle signal, not a port"));
+                }
+            }
+        }
         let mut items = Vec::new();
         self.elab_items(&m.items, &env, &ctx, &[], &mut items)?;
         self.elab_items(&monitor_items, &env, &ctx, &[], &mut items)?;
@@ -1279,10 +1287,16 @@ impl<'a> Design<'a> {
                 }
                 // a bundle with no master: what a master drives takes its idle value
                 ItemKind::TieOff(target) => {
-                    let prefixes = bundle::bundle_prefixes(target, env).filter(|p| p.len() == 1);
-                    let Some(prefix) = prefixes.and_then(|p| p.into_iter().next()) else {
-                        return Err(ctx.at(item.pos).err("tie_off() takes one bundle signal (or an element of a vector of bundles, b[i]), not a port"));
+                    let prefixes = bundle::bundle_prefixes(target, env).unwrap_or_default();
+                    let [prefix] = prefixes.as_slice() else {
+                        let msg = if prefixes.len() > 1 {
+                            "tie_off() takes a bundle signal: name an element of the Vec (v[i]), not the whole vector"
+                        } else {
+                            "tie_off() takes a bundle signal"
+                        };
+                        return Err(ctx.at(item.pos).err(msg));
                     };
+                    let prefix = prefix.clone();
                     let mut idle = Vec::new();
                     bundle::idle_outputs(env, &prefix, &mut idle);
                     for (name, value) in idle {
@@ -1301,6 +1315,10 @@ impl<'a> Design<'a> {
                 ItemKind::Proc { .. } => {}
                 // a memory map: no hardware of its own; its devices are read as constants (`io.UART`, `io.count`)
                 ItemKind::MemMap { name, desc, entries } => {
+                    // the map is read as `name.DEV`, which a signal of the same name would hide
+                    if env.signal(name).is_some() || env.bundle_of(name).is_some() {
+                        return Err(ctx.err(format!("memmap '{name}' reuses the name of a signal")));
+                    }
                     let map = build_memmap(entries, env, ctx)?;
                     self.memmaps.push((name.clone(), desc.clone(), map.devices.clone()));
                     env.define_memmap(name, map);
