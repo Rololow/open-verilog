@@ -1168,6 +1168,45 @@ fn fold_block(stmts: &[Stmt], env: &Env) -> Vec<Stmt> {
     out
 }
 
+/// The coverage items (`--cover`) of the `match` expressions in a value: each arm taken (its condition and no earlier
+/// arm's), and the default arm, when no arm is taken. `pos` is the line of the assignment that holds the value.
+pub(crate) fn cover_matches(e: &Expr, pos: Pos, env: &Env) {
+    let _ = crate::pipeline::rewrite::map_expr(e, &mut |x| {
+        if let Expr::Match(subject, arms) = x {
+            if int_of(&fold_expr(subject, env)).is_none() {
+                cover_match(subject, arms, pos, env);
+            }
+        }
+        Ok(None)
+    });
+}
+
+fn cover_match(subject: &Expr, arms: &[(Option<Vec<crate::ast::SetItem>>, Expr)], pos: Pos, env: &Env) {
+    let at = format!("{}:{}", env.cover_file(), pos.0);
+    let and = |a: Option<Expr>, b: Expr| match a {
+        Some(a) => Expr::Binary("&&".into(), boxed(a), boxed(b), pos),
+        None => b,
+    };
+    // `None` while no earlier arm can have been taken: the condition is then true
+    let mut none: Option<Expr> = None;
+    for (labels, _) in arms {
+        let Some(set) = labels else { continue };
+        let text: Vec<String> = set
+            .iter()
+            .map(|i| match &i.hi {
+                Some(hi) => format!("{}..{}", crate::emit::expr::expr(&i.lo, -1, false).unwrap_or_default(), crate::emit::expr::expr(hi, -1, false).unwrap_or_default()),
+                None => crate::emit::expr::expr(&i.lo, -1, false).unwrap_or_default(),
+            })
+            .collect();
+        let cond = in_set_lowered(subject, set, env);
+        env.add_cover(format!("{at} match arm {}", text.join(", ")), and(none.clone(), cond.clone()));
+        none = Some(and(none.take(), Expr::Unary("!".into(), boxed(cond))));
+    }
+    if arms.iter().any(|(labels, _)| labels.is_none()) {
+        env.add_cover(format!("{at} match arm default"), none.unwrap_or_else(|| num(1)));
+    }
+}
+
 /// The coverage items (`--cover`) of a case on a hardware value: each arm taken (its condition and no earlier arm's),
 /// the default arm, and for a case on an enum, each state that only the default arm handles.
 fn cover_case(subject: &Expr, arms: &[(Option<Vec<Expr>>, Stmt)], pos: Pos, env: &Env) {

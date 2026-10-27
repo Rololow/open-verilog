@@ -1125,6 +1125,10 @@ impl<'a> Design<'a> {
                     }
                 }
                 ItemKind::ContAssign { lhs, rhs } => {
+                    // a `match` in the value is covered at the line of the assignment (an expression has no line of its own)
+                    if env.cover_on() {
+                        fold::cover_matches(rhs, item.pos, env);
+                    }
                     out.push(at(ItemKind::ContAssign { lhs: fold_expr(lhs, env), rhs: fold_expr(rhs, env) }))
                 }
                 ItemKind::AlwaysComb(body) => {
