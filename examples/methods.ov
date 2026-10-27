@@ -3,6 +3,10 @@
 // A small register file: `read(i)` is a combinational method with an argument.
 // Each call site gets its own ports (ov_read_<k>_i / ov_read_<k>), so several reads can happen in parallel.
 module RegFile(input clk, input rst, input logic we, input logic [1:0] wa, input logic [7:0] wd) {
+  reset rst;
+
+  clock clk;
+
   logic [7:0] mem [4];
   always_ff @(posedge clk) {
     if (we) { mem[wa] <= wd; }

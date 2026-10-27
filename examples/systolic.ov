@@ -3,6 +3,8 @@
 // (the classic input skew, one `.delay()` each); every PE multiplies, accumulates and passes its inputs on.
 module Pe<int W = 8, int ACC = 24>(input clk, input clear, input logic [W-1:0] a_in, input logic [W-1:0] b_in,
                                    output logic [W-1:0] a_out, output logic [W-1:0] b_out, output logic [ACC-1:0] acc) {
+  clock clk;
+
   always_ff @(posedge clk) {
     a_out <= a_in;
     b_out <= b_in;
@@ -12,6 +14,8 @@ module Pe<int W = 8, int ACC = 24>(input clk, input clear, input logic [W-1:0] a
 
 module Systolic<int N = 4, int W = 8>(input clk, input clear, input logic [W-1:0] a [N], input logic [W-1:0] b [N],
                                       output logic [2*W+clog2(N)-1:0] c [N][N]) {
+  clock clk;
+
   logic [W-1:0] ah [N][N+1];                 // horizontal links (A flows right)
   logic [W-1:0] bv [N+1][N];                 // vertical links (B flows down)
   for i in 0..N {

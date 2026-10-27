@@ -5,15 +5,20 @@
 const CASES: &[(&str, &str, &str, Option<(usize, usize)>)] = &[
     (
         "inconnu_suggestion",
-        "module M(input clk, input rst, output logic [7:0] q) {\n  reg [7:0] cnt = 0;\n  always_ff {\n    cnt <= cnt2 + 1;\n  }\n  assign q = cnt;\n}\n",
+        "module M(input clk, input rst, output logic [7:0] q) {
+  clock clk;
+  reset rst;
+\n  reg [7:0] cnt = 0;\n  always_ff {\n    cnt <= cnt2 + 1;\n  }\n  assign q = cnt;\n}\n",
         "unknown identifier 'cnt2' (did you mean 'cnt'?)",
-        Some((4, 12)),
+        Some((7, 12)),
     ),
     (
         "point_virgule_manquant",
-        "module M(input clk, output logic [7:0] q) {\n  always_ff @(posedge clk) {\n    q <= q + 1\n  }\n}\n",
+        "module M(input clk, output logic [7:0] q) {
+  clock clk;
+\n  always_ff @(posedge clk) {\n    q <= q + 1\n  }\n}\n",
         "expected ';' after '1'",
-        Some((3, 15)),
+        Some((5, 15)),
     ),
     (
         "membre_enum",
@@ -48,7 +53,10 @@ const CASES: &[(&str, &str, &str, Option<(usize, usize)>)] = &[
     ),
     (
         "lecture_stage_futur",
-        "pipeline P(input clk, input rst, input logic [7:0] a, output logic [7:0] y) {\n  stage s0 { logic [7:0] x = a + later; }\n  stage s1 { logic [7:0] later = a; assign y = later; }\n}\n",
+        "pipeline P(input clk, input rst, input logic [7:0] a, output logic [7:0] y) {
+  clock clk;
+  reset rst;
+\n  stage s0 { logic [7:0] x = a + later; }\n  stage s1 { logic [7:0] later = a; assign y = later; }\n}\n",
         "forwarding",
         None,
     ),
@@ -66,7 +74,10 @@ const CASES: &[(&str, &str, &str, Option<(usize, usize)>)] = &[
     ),
     (
         "pipeline_array_index",
-        "pipeline P(input clk, input rst, input logic [7:0] d, output logic [7:0] y) {\n  logic [7:0] v [2];\n  stage a { assign v[0] = d; }\n  stage b { assign y = v[2]; }\n}\n",
+        "pipeline P(input clk, input rst, input logic [7:0] d, output logic [7:0] y) {
+  clock clk;
+  reset rst;
+\n  logic [7:0] v [2];\n  stage a { assign v[0] = d; }\n  stage b { assign y = v[2]; }\n}\n",
         "index 2 out of range (size 2)",
         None,
     ),

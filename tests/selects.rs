@@ -139,6 +139,21 @@ test \"selects\" for M {{
 }
 
 #[test]
+fn wrap_of_a_sum_with_a_signed_operand_keeps_its_carries() {
+    // the cast goes to the signed leaf: a cast around the whole sum would size the sum by its own operands and lose
+    // its carries (reported from the mem1 V3 colend)
+    let c = compiled(
+        "
+module M(input logic [7:0] log, input logic [7:0] mx, input logic [7:0] off, input logic [24:0] sc, output logic [24:0] y) {
+  wire signed [24:0] split = (log + mx + $signed(off) - sc).wrap();
+  assign y = split;
+}",
+    );
+    assert!(c.sv.contains("25'($signed(off))"), "{}", c.sv);
+    assert!(!c.sv.contains("25'(log + mx"), "{}", c.sv);
+}
+
+#[test]
 fn wrapped_parts_of_cat_are_cast() {
     let c = compiled(
         "

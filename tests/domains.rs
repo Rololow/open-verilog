@@ -52,6 +52,8 @@ fn a_combinational_path_keeps_the_domain_of_its_source() {
 fn a_synchronizer_takes_the_value_through_an_async_input() {
     compiles(
         "module Sync<int W = 1>(input clk, input async logic [W-1:0] d, output logic [W-1:0] q) {
+  clock clk;
+
   logic [W-1:0] meta;
   always_ff @(posedge clk) { meta <= d; q <= meta; }
 }
@@ -92,6 +94,8 @@ fn an_async_memory_may_be_read_in_another_domain() {
 #[test]
 fn an_instance_input_used_from_another_domain_is_a_crossing() {
     let src = "module Child(input clk, input logic d, output logic q) {
+  clock clk;
+
   always_ff @(posedge clk) { q <= d; }
 }
 module Top(input clk_a, input clk_b, input logic a, output logic q) {
@@ -106,6 +110,8 @@ module Top(input clk_a, input clk_b, input logic a, output logic q) {
 #[test]
 fn an_input_used_in_two_domains_is_an_error() {
     let src = "module Child(input clk, input logic d, output logic q) {
+  clock clk;
+
   always_ff @(posedge clk) { q <= d; }
 }
 module Top(input clk_a, input clk_b, input logic x, output logic q1, output logic q2) {
@@ -119,6 +125,9 @@ module Top(input clk_a, input clk_b, input logic x, output logic q1, output logi
 #[test]
 fn a_reset_asynchronous_in_one_place_and_synchronous_in_another_warns() {
     let src = "module Top(input clk, input rst, input logic a, output logic q) {
+  clock clk;
+  reset rst;
+
   logic r;
   always_ff @(posedge clk or negedge rst) { if (!rst) { r <= 0; } else { r <= a; } }
   always_ff @(posedge clk) { if (rst) { q <= 0; } else { q <= r; } }
@@ -134,6 +143,9 @@ fn a_reset_asynchronous_in_one_place_and_synchronous_in_another_warns() {
 #[test]
 fn a_reset_tested_active_high_and_active_low_warns() {
     let src = "module Top(input clk, input rst, input logic a, output logic q, output logic p) {
+  clock clk;
+  reset rst;
+
   logic r;
   always_ff @(posedge clk) { if (rst) { r <= 0; } else { r <= a; } }
   always_ff @(posedge clk) { if (!rst) { p <= 0; } else { p <= r; } }
@@ -152,6 +164,8 @@ fn a_producer_whose_valid_waits_for_ready_is_an_error() {
   output T data;
 }
 module Src(input clk, master Stream<logic [7:0]> out) {
+  clock clk;
+
   assign out.valid = out.ready;
   assign out.data = 0;
 }
@@ -174,6 +188,8 @@ fn a_nested_producer_whose_valid_waits_for_ready_is_an_error() {
 }
 bundle Pair { output Stream<logic [7:0]> s; }
 module Src(input clk, master Pair p) {
+  clock clk;
+
   assign p.s.valid = p.s.ready;
   assign p.s.data = 0;
 }

@@ -47,6 +47,8 @@ pub struct Env {
     fns: Rc<HashMap<String, FnDef>>,
     signals: Rc<RefCell<SignalTable>>,
     reset: Option<ResetSpec>,
+    /// The module's clock, from its `clock` declaration: the clocked blocks use it, and nothing else names one.
+    clock: Option<String>,
     reg_inits: Rc<RefCell<Vec<(String, crate::ast::Expr)>>>,
     /// The registers and the blocks of `.delay()` lines, placed by the module, and the number of lines so far.
     delay_decls: Rc<RefCell<Vec<crate::ast::Item>>>,
@@ -254,6 +256,15 @@ impl Env {
 
     pub fn reset(&self) -> Option<&ResetSpec> {
         self.reset.as_ref()
+    }
+
+    pub fn set_clock(&mut self, clock: Option<String>) {
+        self.clock = clock;
+    }
+
+    /// The module's clock, as declared (`clock clk;`).
+    pub fn clock(&self) -> Option<&str> {
+        self.clock.as_deref()
     }
 
     /// The registers with an initial value: their reset value in the implicit `always_ff`.

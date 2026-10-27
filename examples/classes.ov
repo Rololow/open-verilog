@@ -4,6 +4,9 @@ trait Valid {
 }
 
 module Stage(input clk, input rst, input logic in_v, output logic out_v) : Valid {
+  clock clk;
+  reset rst;
+
   logic v;
   fn is_valid() -> logic { return v; }
   always_ff @(posedge clk) {

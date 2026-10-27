@@ -4,6 +4,9 @@
 const CPU_LIKE: &str = "
 pipeline P(input clk, input rst, master Stream<logic [7:0]> o, input logic [4:0] rd_in, input logic [7:0] d,
            output logic [7:0] count) {
+  clock clk;
+  reset rst;
+
   Stream<logic [12:0]> q;                     // an internal producer feeds stage 0
   assign q.valid = 1;
   assign q.data = {rd_in, d};
@@ -59,6 +62,8 @@ fn stage_reference_to_a_later_definition_is_refused() {
 fn initial_and_always_ff_on_one_variable() {
     let bad = "
 module M(input clk, input logic [3:0] a, input logic [7:0] d, output logic [7:0] q) {
+  clock clk;
+
   logic [7:0] m [16];
   initial { for i in 0..16 { m[i] = 0; } }
   always_ff @(posedge clk) { m[a] <= d; }
@@ -108,6 +113,9 @@ for (name, n) in CASES {
 const YOUNGER: &str = "
 pipeline Q(input clk, input rst, input logic valid_in, input logic [7:0] d, input logic go, input logic hold_a,
            output logic ready_out, output logic [7:0] y) {
+  clock clk;
+  reset rst;
+
   stage a { logic [7:0] x = d; stall_when(pipe.hold_a); }
   stage b { logic [7:0] u = x; }
   stage c { assign y = u; flush_younger_when(pipe.go); }
@@ -177,6 +185,8 @@ fn statement_fn_is_expanded_where_it_is_called() {
     // a fn of statements (no return) called in a procedural block: its assignments, with the arguments bound
     let out = sv("
 module M(input clk, input logic go, input logic [7:0] a, output logic [7:0] x, output logic [7:0] y) {
+  clock clk;
+
   fn put(v, k) { x <= v; y <= (v + k).wrap(); }
   always_ff @(posedge clk) { if (go) { put(a, 1); } else { put(0, 2); } }
 }");
@@ -204,11 +214,11 @@ fn narrow_signed_operand_of_an_unsigned_sum() {
 module M(input logic [31:0] acc, input logic [7:0] a, input logic [7:0] b, output logic [31:0] y) {
   assign y = (acc + $signed(a) * $signed(b)).wrap();
 }");
-    assert!(out.contains("acc + 32'($signed(a) * $signed(b))"), "{out}");
+    // each signed leaf is widened, so the product is exact modulo 2^32 (the same value as the product cast)
+    assert!(out.contains("acc + 32'($signed(a)) * 32'($signed(b))"), "{out}");
 }
 
 #[test]
-#[ignore = "not implemented: lint has no [sign] category yet"]
 fn narrow_signed_operand_in_lint() {
     let dir = std::env::temp_dir().join("ovc_pipeline_state_sign");
     let _ = std::fs::remove_dir_all(&dir);
@@ -243,7 +253,6 @@ fn constant_right_shift_narrows_the_value() {
 }
 
 #[test]
-#[ignore = "not implemented: lint has no [sign] category yet (signed and unsigned operands in SV)"]
 fn mulhsu_of_darkriscv_in_lint() {
     // the upstream darkriscv's MULHSU: a signed * unsigned product in a declaration, rs1 zero-extended
     let dir = std::env::temp_dir().join("ovc_pipeline_state_mulhsu");
@@ -275,6 +284,9 @@ fn input_read_in_a_later_stage_must_say_which_value() {
     // left implicit, it was silently carried (the debug halt request arrived 2 cycles late)
     let src = "
 pipeline P(input clk, input rst, input logic [7:0] d, input logic h, output logic [7:0] q) {
+  clock clk;
+  reset rst;
+
   stage a { logic [7:0] x = d; }
   stage b { assign q = HERE ? x : 0; }   // a stage holds assignments and declarations only
 }";

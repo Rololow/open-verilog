@@ -70,6 +70,9 @@ fn pure_functions_are_inlined() {
 #[test]
 fn reg_resets_in_an_implicit_always_ff() {
     let src = "module Counter2<int W = 8>(input clk, input rst, input en, output logic [W-1:0] q) {
+  clock clk;
+  reset rst;
+
   reg [W-1:0] cnt = 0;
   always_ff { if (en) { cnt <= cnt + 1; } }
   assign q = cnt;
@@ -81,6 +84,8 @@ fn reg_resets_in_an_implicit_always_ff() {
 #[test]
 fn reset_directive_sets_polarity_and_async() {
     let src = "module Flag(input clk, input rstn, input set, output logic f) {
+  clock clk;
+
   reset rstn low async;
   reg r = 0;
   always_ff { if (set) { r <= 1; } }

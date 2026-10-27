@@ -14,6 +14,10 @@ bundle Stream<type T> {
 // First-in first-out buffer of DEPTH entries (DEPTH >= 2): in.ready = not full, out.valid = not empty.
 module Fifo<type T = logic [7:0], int DEPTH = 4>(input clk, input rst, slave Stream<T> in, master Stream<T> out,
                                                  output logic [clog2(DEPTH + 1) - 1:0] count) {
+  reset rst;
+
+  clock clk;
+
   val A = clog2(DEPTH);
   T mem [DEPTH];
   reg [A - 1:0] rd, wr;
@@ -31,6 +35,10 @@ module Fifo<type T = logic [7:0], int DEPTH = 4>(input clk, input rst, slave Str
 
 // Register slice (skid buffer): registers both directions (valid / data and ready) at full throughput.
 module Slice<type T = logic [7:0]>(input clk, input rst, slave Stream<T> in, master Stream<T> out) {
+  reset rst;
+
+  clock clk;
+
   reg full, skid_full;
   T main, skid;
   assign in.ready = !skid_full;
@@ -51,6 +59,10 @@ module Slice<type T = logic [7:0]>(input clk, input rst, slave Stream<T> in, mas
 // offered on `out` the choice is kept until it is taken, so the output stays stable.
 module Arbiter<type T = logic [7:0], int N = 2>(input clk, input rst, slave Vec<Stream<T>, N> in, master Stream<T> out,
                                                 output logic [clog2(N) - 1:0] source) {
+  reset rst;
+
+  clock clk;
+
   val W = clog2(N);
   reg [W - 1:0] last, held;              // last input served; choice kept while out is stalled
   reg locked;
@@ -118,6 +130,9 @@ bundle AxiLite<int AW = 32, int DW = 32> {
 // WLAST on the beat AWLEN announces (W may come before AW), no B before its write is complete, no R without a
 // read, RLAST on the beat ARLEN announces (checked while the responses come back in order).
 module AxiMonitor<int AW = 32, int DW = 32, int IW = 4, int DEPTH = 8>(input clk, input rst, monitor Axi<AW, DW, IW> b) {
+  clock clk;
+  reset rst;
+
   val D = clog2(DEPTH);
   val MAXSIZE = clog2(DW / 8);
   logic [8:0] awq [DEPTH], wq [DEPTH];       // burst lengths: announced by AW, seen on W
@@ -204,6 +219,9 @@ module AxiMonitor<int AW = 32, int DW = 32, int IW = 4, int DEPTH = 8>(input clk
 
 // AXI4-Lite: no response without its request (B after both the address and the data of a write).
 module AxiLiteMonitor<int AW = 32, int DW = 32>(input clk, input rst, monitor AxiLite<AW, DW> b) {
+  clock clk;
+  reset rst;
+
   logic [31:0] aws, ws, bs, ars, rs;
   always_ff @(posedge clk) {
     if (rst) { aws <= 0; ws <= 0; bs <= 0; ars <= 0; rs <= 0; }

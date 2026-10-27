@@ -19,7 +19,7 @@ synthesis tool reads it.
 - [Configurations](Configurations): config records, `extends`, `with`.
 - [Classes](Classes): traits, `extends`, `override`, modules as parameters.
 - [Clock domains](Clock-Domains): synchronizers, asynchronous FIFOs, crossings.
-- [Reset and quality of life](Reset-and-Quality-of-Life): implicit clock and reset, inferred widths.
+- [Reset and quality of life](Reset-and-Quality-of-Life): declared clock and reset, inferred widths.
 - [Debug and tests](Debug-and-Tests): hierarchy access, probes, test blocks.
 - [Instruction sets](Instruction-Sets): one description of the formats.
 - [Systolic array](Systolic-Array): a larger design, with input skew.

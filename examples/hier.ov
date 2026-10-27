@@ -1,5 +1,8 @@
 // Reaching into the hierarchy: a debug probe and a halt line, without editing the modules in between.
 module Counter(input clk, input rst, input hold = 0, output logic [7:0] q) {
+  clock clk;
+  reset rst;
+
   always_ff @(posedge clk) { if (rst) { q <= 0; } else if (!hold) { q <= q + 1; } }
 }
 module Cluster(input clk, input rst, output logic [7:0] sum) {
@@ -8,6 +11,9 @@ module Cluster(input clk, input rst, output logic [7:0] sum) {
   assign sum = q.list().reduce(^);
 }
 module Soc(input clk, input rst, input dbg_halt, output logic [7:0] sum, output logic [7:0] probe) {
+  clock clk;
+  reset rst;
+
   Cluster cluster(.clk, .rst, .sum);
   assign probe = cluster.c[2].q;          // read three levels down: ports are added on the way up
   assign cluster.c[2].hold = dbg_halt;    // drive an input that has a default: ports are added on the way down

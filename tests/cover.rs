@@ -6,6 +6,9 @@ use ovc::Options;
 const SRC: &str = "
 enum St : logic [1:0] { IDLE = 0, RUN = 1, DONE = 2, ERR = 3 }
 module M(input clk, input rst, input logic go, input logic [1:0] op, output logic [7:0] y) {
+  clock clk;
+  reset rst;
+
   reg [1:0] st;
   always_ff { case (st) { St.IDLE: { if (go) { st <= St.RUN; } } St.RUN: { st <= St.DONE; } default: { st <= St.IDLE; } } }
   assign y = match (op) { 0: 1; 1, 2: 5; default: 9 };
@@ -20,7 +23,7 @@ fn with_cover(src: &str, cover: bool) -> String {
 fn items_of_case_and_match() {
     let sv = with_cover(SRC, true);
     assert!(sv.contains("if (!(st == St_IDLE) && st == St_RUN) ov_cov_1 = 1'b1;"), "{sv}");
-    assert!(sv.contains("ovc-cover %0d t.ov:5 case value St.DONE (default arm)"), "{sv}");
+    assert!(sv.contains("ovc-cover %0d t.ov:8 case value St.DONE (default arm)"), "{sv}");
     assert!(sv.contains("if (!(op == 0) && (op == 1 || op == 2)) ov_cov_6 = 1'b1;"), "{sv}");
     assert!(sv.contains("`ifdef OVC_COVER") && sv.contains("final begin"), "{sv}");
     // only with --cover

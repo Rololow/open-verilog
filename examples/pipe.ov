@@ -1,5 +1,7 @@
 // Pipeline of depth STAGES over any type T.
 module Pipe<type T = logic [7:0], int STAGES = 3>(input clk, input T d, output T q) {
+  clock clk;
+
   T stage [STAGES+1];
   assign stage[0] = d;
   for i in 0..STAGES {

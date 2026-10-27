@@ -32,13 +32,16 @@ target.
 
 ## Enums and FSMs
 
-An enum is a type with named members. An `fsm` block lists the states and the transitions; the clock and the reset
-are implicit.
+An enum is a type with named members. An `fsm` block lists the states and the transitions; it uses the clock and the
+reset the module declares.
 
 ```systemverilog ov
 enum State { IDLE, BUSY, DONE }
 
 module Handshake(input clk, input rst, input req, output logic ack, output logic busy) {
+  clock clk;
+  reset rst;
+
   fsm State state = IDLE {
     ack = 0;                          // default values (avoid latches)
     busy = 0;

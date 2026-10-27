@@ -11,6 +11,8 @@ Anything else that crosses a domain is an error.
 ```systemverilog ov
 // two-flop synchronizer: the only place where `d` may come from another domain
 module Sync<int W = 1>(input clk, input async logic [W-1:0] d, output logic [W-1:0] q) {
+  clock clk;
+
   logic [W-1:0] meta;
   always_ff @(posedge clk) { meta <= d; q <= meta; }
 }

@@ -65,14 +65,6 @@ pub fn directives(m: &Module) -> Result<Directives> {
     Ok(out)
 }
 
-/// The reset of the ports, by the reference's names: rst and reset (active high), rst_n, reset_n, resetn (active low).
-fn default_reset(ports: &HashMap<&str, &Port>) -> Option<(String, bool)> {
-    [("rst", false), ("reset", false), ("rst_n", true), ("reset_n", true), ("resetn", true)]
-        .into_iter()
-        .find(|(n, _)| ports.contains_key(*n))
-        .map(|(n, low)| (n.to_string(), low))
-}
-
 /// Lowers a pipeline module to a plain module. The clock and reset are the directives', else the ports'.
 pub fn lower(source: &Module, file: &str, asserts: bool, directives: &Directives, bundle_signals: &[String]) -> Result<Lowered> {
     let scalar = arrays::scalarize(source, file)?;
@@ -90,30 +82,30 @@ pub fn lower(source: &Module, file: &str, asserts: bool, directives: &Directives
         return Err(err(m.pos, format!("pipeline '{}' has no stages", m.name)));
     }
     let ports: HashMap<&str, &Port> = m.ports.iter().map(|p| (p.name.as_str(), p)).collect();
-    let clock = directives.clock.clone().unwrap_or_else(|| "clk".to_string());
+    // the clock and the reset are the ones the pipeline declares: a name is never guessed from its ports
+    let Some(clock) = directives.clock.clone() else {
+        return Err(err(m.pos, format!("pipeline '{}' has no clock: declare `clock clk;`", m.name)));
+    };
     if !ports.contains_key(clock.as_str()) {
-        return Err(err(m.pos, format!("pipeline '{}' has no clock: add a '{clock}' port", m.name)));
+        return Err(err(m.pos, format!("pipeline '{}' is clocked by '{clock}', which is not a port", m.name)));
     }
-    let reset = directives.reset.clone().or_else(|| default_reset(&ports));
+    let reset = directives.reset.clone();
     if let Some((name, _)) = &reset {
         if !ports.contains_key(name.as_str()) {
             return Err(err(m.pos, format!("pipeline '{}' is reset by '{name}', which is not a port", m.name)));
         }
     }
     if stages.len() > 1 && reset.is_none() {
-        return Err(err(m.pos, format!("pipeline '{}' has no reset: add an 'rst' port", m.name)));
+        return Err(err(m.pos, format!("pipeline '{}' has no reset: declare `reset rst;`", m.name)));
     }
     // the reset as the condition that clears the registers, and as the text the checks use (inverted when low)
-    let reset_name = reset.as_ref().map_or_else(|| "rst".to_string(), |(n, _)| n.clone());
-    let reset_cond = match &reset {
-        Some((n, true)) => Expr::Unary("!".into(), Box::new(Expr::Ident(n.clone(), m.pos))),
-        Some((n, false)) => Expr::Ident(n.clone(), m.pos),
-        None => Expr::Ident("rst".into(), m.pos),
-    };
+    let reset_name = reset.as_ref().map_or_else(String::new, |(n, _)| n.clone());
+    let reset_cond = reset.as_ref().map(|(n, low)| if *low { Expr::Unary("!".into(), Box::new(Expr::Ident(n.clone(), m.pos))) } else { Expr::Ident(n.clone(), m.pos) });
+    // a pipeline without a reset has no reset in its checks: `1'b0` never holds
     let reset_text = match &reset {
         Some((n, true)) => format!("!{n}"),
         Some((n, false)) => n.clone(),
-        None => "rst".to_string(),
+        None => "1'b0".to_string(),
     };
     let control_names = [clock.as_str(), reset_name.as_str(), "valid_in", "valid_out", "ready_out"];
     let owners = find_owners(m, &stages, &ports, &control_names).map_err(|(pos, msg)| err(pos, msg))?;

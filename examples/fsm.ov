@@ -3,6 +3,10 @@
 enum State { IDLE, BUSY, DONE }
 
 module Handshake(input clk, input rst, input req, output logic ack, output logic busy) {
+  reset rst;
+
+  clock clk;
+
   fsm State state = IDLE {
     ack = 0;                          // default values (avoid latches)
     busy = 0;

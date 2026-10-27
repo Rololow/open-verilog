@@ -2,6 +2,9 @@
 // (top module ovc_tests) that any SystemVerilog simulator runs; it prints one PASS / FAIL line per test.
 
 module Counter<int W = 8>(input clk, input rst, input en, output logic [W-1:0] q) {
+  clock clk;
+  reset rst;
+
   always_ff @(posedge clk) { if (rst) { q <= 0; } else if (en) { q <= (q + 1).wrap(); } }
 }
 

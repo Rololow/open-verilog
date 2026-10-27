@@ -722,11 +722,37 @@ impl<'a> Design<'a> {
                 .and_then(|m| m.ports.iter().find(|q| q.dir == Dir::Monitor))
                 .map(|q| q.name.clone())
                 .ok_or_else(|| ctx.err(format!("monitor '{module}' has no monitor port")))?;
-            let conns = vec![
-                Conn { port: Some("clk".into()), expr: Some(Expr::Ident("clk".into(), p.pos)) },
-                Conn { port: Some("rst".into()), expr: Some(Expr::Ident("rst".into(), p.pos)) },
+            // the monitor declares its own clock and reset: they are connected to the module's, with the polarity the
+            // monitor expects (a reset inverted when the two polarities differ)
+            let decl = self.by_name.get(module.as_str()).ok_or_else(|| ctx.err(format!("monitor '{module}' is not defined")))?;
+            let monitor_clock = decl
+                .items
+                .iter()
+                .find_map(|it| match &it.kind {
+                    ItemKind::Clock { name } => Some(name.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| ctx.err(format!("monitor '{module}' declares no clock: `clock clk;`")))?;
+            let monitor_reset = decl.items.iter().find_map(|it| match &it.kind {
+                ItemKind::Reset { name, low, .. } => Some((name.clone(), *low)),
+                _ => None,
+            });
+            let clock = env.clock().ok_or_else(|| ctx.err("a protocol monitor needs the module's clock: declare `clock clk;`"))?;
+            let mut conns = vec![
+                Conn { port: Some(monitor_clock), expr: Some(Expr::Ident(clock.to_string(), p.pos)) },
                 Conn { port: Some(port), expr: Some(Expr::Ident(p.name.clone(), p.pos)) },
             ];
+            if let Some((monitor_rst, monitor_low)) = monitor_reset {
+                let expr = match env.reset() {
+                    Some(r) => {
+                        let signal = Expr::Ident(r.name.clone(), p.pos);
+                        if r.low != monitor_low { Expr::Unary("!".into(), Box::new(signal)) } else { signal }
+                    }
+                    // no reset here: the monitor sees its reset inactive
+                    None => Expr::Num(if monitor_low { "1'b1" } else { "1'b0" }.into()),
+                };
+                conns.push(Conn { port: Some(monitor_rst), expr: Some(expr) });
+            }
             let name = format!("{}_mon{k}", p.name);
             let targs = targs.into_iter().map(|a| (None, a)).collect();
             out.push(Item { pos: p.pos, kind: ItemKind::Instance(Instance { module, targs, name, conns, pos: p.pos }) });
@@ -787,6 +813,16 @@ impl<'a> Design<'a> {
             return Err(ctx.err(format!("'{}' is not supported yet", m.kind)));
         }
         let mut env = bind_params(m, overrides, &self.globals, &ctx)?;
+        // the clock and the reset are read first: the protocol monitors of the ports are connected to them
+        for it in &m.items {
+            match &it.kind {
+                ItemKind::Clock { name } => env.set_clock(Some(name.clone())),
+                ItemKind::Reset { name, low, is_async } => {
+                    env.set_reset(Some(ResetSpec { name: name.clone(), low: *low, is_async: *is_async }), Vec::new());
+                }
+                _ => {}
+            }
+        }
         env.start_cover(self.cover, &m.origin);
         // the enums the module declares shadow the top-level ones of the same name
         let (local, local_order) = build_enums(&m.enums, ctx.file)?;
@@ -860,6 +896,7 @@ impl<'a> Design<'a> {
             }
         }
         let mut reset = None;
+        let mut clock: Option<String> = None;
         // the integer constants and the memory maps come first, in order: the sizes of the vectors of bundles may be
         // made of them (`io.count`); the errors of a map are reported where it is elaborated
         for it in &m.items {
@@ -927,6 +964,7 @@ impl<'a> Design<'a> {
                 ItemKind::Reset { name, low, is_async } => {
                     reset = Some(ResetSpec { name: name.clone(), low: *low, is_async: *is_async });
                 }
+                ItemKind::Clock { name } => clock = Some(name.clone()),
                 _ => {}
             }
         }
@@ -964,7 +1002,8 @@ impl<'a> Design<'a> {
         env.set_bundle_of(bundle_of);
         env.set_signals(signals);
         // without a `reset` declaration, the module's reset is the port the implicit clock and reset use
-        let reset = reset.or_else(|| default_reset(&ports));
+        // the clock and the reset are the ones the module declares: a name is never guessed from its ports
+        env.set_clock(clock);
         env.set_reset(reset, reg_inits);
         if let Some(msg) = select_past_width(&m.items, &env).or_else(|| view_width_error(&m.items, &env)) {
             return Err(ctx.err(msg));
@@ -979,12 +1018,12 @@ impl<'a> Design<'a> {
         }
         let mut items = Vec::new();
         self.elab_items(&m.items, &env, &ctx, &[], &mut items)?;
-        if fold::take_fold_overflow() {
-            return Err(ctx.err("a fold builds more than 200000 terms: its value uses its accumulator more than once, so it doubles at each step"));
+        if let Some(msg) = fold::take_fold_error() {
+            return Err(ctx.err(msg));
         }
         self.elab_items(&monitor_items, &env, &ctx, &[], &mut items)?;
         // the coverage of the case statements: sticky flags, printed at the end of the simulation (`ovc cover`)
-        if let Some(lines) = coverage_lines(&env, env.cover_items(), m.ports.iter().any(|p| p.name == "clk")) {
+        if let Some(lines) = coverage_lines(&env, env.cover_items(), env.clock().is_some()) {
             items.push(Item { pos: m.pos, kind: ItemKind::Raw(lines) });
         }
         // the members of the enums this module uses, declared first
@@ -1182,7 +1221,7 @@ impl<'a> Design<'a> {
                     let (folded, locals) = scope::hoist_locals(&fold_stmt(body, env), &mut self.local_count);
                     out.extend(locals.into_iter().map(|d| at(ItemKind::Decl(d))));
                     let (sens, body) = match sens {
-                        Sens::Edges(edges) if edges.is_empty() => implicit_clocking(env, folded, item.pos),
+                        Sens::Edges(edges) if edges.is_empty() => implicit_clocking(env, folded, item.pos, ctx)?,
                         Sens::Edges(edges) => (Sens::Edges(edges.iter().map(|(e, x)| (e.clone(), fold_expr(x, env))).collect()), folded),
                         Sens::Comb => (Sens::Comb, folded),
                     };
@@ -1777,11 +1816,6 @@ pub(crate) fn assigned_names(s: &Stmt, out: &mut BTreeSet<String>) {
 }
 
 /// The reset of a module from its port names: `rst`, `reset` (active high), or `rst_n`, `reset_n`, `resetn` (active low).
-fn default_reset(ports: &[Port]) -> Option<ResetSpec> {
-    let names = [("rst", false), ("reset", false), ("rst_n", true), ("reset_n", true), ("resetn", true)];
-    names.into_iter().find(|(n, _)| ports.iter().any(|p| p.name == *n)).map(|(n, low)| ResetSpec { name: n.to_string(), low, is_async: false })
-}
-
 /// The file a module comes from (the design's file when it has none).
 fn ctx_file<'a>(m: &'a Module, default: &'a str) -> &'a str {
     if m.origin.is_empty() { default } else { &m.origin }
@@ -2162,10 +2196,11 @@ fn bundle_named_by(value: &Expr, env: &Env) -> Option<BundleRef> {
 
 /// `always_ff { ... }` without an event: the module's clock and reset, and the registers reset to their
 /// initial values.
-fn implicit_clocking(env: &Env, body: Stmt, pos: Pos) -> (Sens, Stmt) {
-    let reset = env.reset().cloned().unwrap_or(ResetSpec { name: "rst".into(), low: false, is_async: false });
-    let mut edges = vec![("posedge".to_string(), Expr::Ident("clk".into(), pos))];
-    if reset.is_async {
+fn implicit_clocking(env: &Env, body: Stmt, pos: Pos, ctx: &Ctx) -> Result<(Sens, Stmt)> {
+    let clock = env.clock().ok_or_else(|| ctx.err("a clocked block needs the module's clock: declare `clock clk;` in the module"))?;
+    let reset = env.reset().cloned();
+    let mut edges = vec![("posedge".to_string(), Expr::Ident(clock.to_string(), pos))];
+    if let Some(reset) = reset.as_ref().filter(|r| r.is_async) {
         let edge = if reset.low { "negedge" } else { "posedge" };
         edges.push((edge.to_string(), Expr::Ident(reset.name.clone(), pos)));
     }
@@ -2186,14 +2221,16 @@ fn implicit_clocking(env: &Env, body: Stmt, pos: Pos) -> (Sens, Stmt) {
             targets.into_iter().map(|lhs| Stmt::Assign { lhs, rhs: init.clone(), nonblocking: true, pos: (0, 0) }).collect::<Vec<_>>()
         })
         .collect();
-    let body = if resets.is_empty() {
-        body
-    } else {
-        let active = Expr::Ident(reset.name.clone(), pos);
-        let cond = if reset.low { Expr::Unary("!".into(), Box::new(active)) } else { active };
-        Stmt::If { cond, then: Box::new(Stmt::Block(resets)), els: Some(Box::new(body)) }
+    // without a reset declared, the registers have no reset branch
+    let body = match reset {
+        Some(reset) if !resets.is_empty() => {
+            let active = Expr::Ident(reset.name.clone(), pos);
+            let cond = if reset.low { Expr::Unary("!".into(), Box::new(active)) } else { active };
+            Stmt::If { cond, then: Box::new(Stmt::Block(resets)), els: Some(Box::new(body)) }
+        }
+        _ => body,
     };
-    (Sens::Edges(edges), body)
+    Ok((Sens::Edges(edges), body))
 }
 
 fn elab_decl(d: &Decl, env: &Env, ctx: &Ctx) -> Result<Decl> {

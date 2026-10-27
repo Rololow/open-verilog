@@ -33,6 +33,8 @@ fn an_in_set_tests_values_and_ranges() {
 #[test]
 fn a_table_select_and_a_for_in_over_a_table() {
     let sv = sv_of("module M(input clk, input logic [1:0] addr, input logic [7:0] wd, input we, output logic [7:0] rd) {
+  clock clk;
+
   logic [7:0] A = 0, B = 0;
   val regs = [[0, A], [1, B]];
   always_ff @(posedge clk) { if (we) { for (k, r) in regs { if (addr == k) { r <= wd; } } } }
@@ -58,7 +60,9 @@ module M(input logic [31:0] instr, output logic [3:0] rd, output logic sign) {
 
 #[test]
 fn a_star_connection_connects_the_ports_by_name() {
-    let sv = sv_of("module R(input clk, input logic [7:0] d, output logic [7:0] q) { always_ff @(posedge clk) { q <= d; } }
+    let sv = sv_of("module R(input clk, input logic [7:0] d, output logic [7:0] q) {
+  clock clk;
+ always_ff @(posedge clk) { q <= d; } }
 module T(input clk, input logic [7:0] d, output logic [7:0] q) { R r(.*); }");
     assert!(sv.contains("R r (.clk(clk), .d(d), .q(q));"), "{sv}");
 }

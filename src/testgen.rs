@@ -62,11 +62,14 @@ pub fn generate(tests: &[(TestDef, String)], modules: &[Module], envs: &HashMap<
 
 /// The module of one test: the ports of the design, the clock and reset, and the statements of the test.
 fn test_module(k: usize, test: &TestDef, m: &Module, env: Env, procs: &Procs) -> Result<String> {
-    let clock = m.ports.iter().any(|p| p.name == "clk");
-    let reset = ["rst", "reset", "rst_n", "reset_n", "resetn"].iter().find(|n| m.ports.iter().any(|p| p.name == **n)).map(|n| (n.to_string(), n.ends_with('n') && *n != "reset" && *n != "rst"));
-    let mut t = Writer { lines: Vec::new(), module: m, env, procs, clock, reset, test, binds: Vec::new(), dirty: true, at: String::new(), calls: Vec::new() };
+    // the clock and the reset are the design's declared ones (`clock`, `reset`), the testbench drives them by name
+    let clock = env.clock().is_some();
+    // without a declared clock the testbench drives no clock, so the name is never written
+    let clk = env.clock().unwrap_or_default().to_string();
+    let reset = env.reset().map(|r| (r.name.clone(), r.low));
+    let mut t = Writer { lines: Vec::new(), module: m, env, procs, clock, clk: clk.clone(), reset, test, binds: Vec::new(), dirty: true, at: String::new(), calls: Vec::new() };
     for p in &m.ports {
-        if p.dir == Dir::Input && p.name != "clk" {
+        if p.dir == Dir::Input && p.name != clk {
             t.w(&if p.dims.is_empty() { format!("{} = '0;", p.name) } else { format!("{} = '{{default: '0}};", p.name) });
         }
     }
@@ -84,14 +87,14 @@ fn test_module(k: usize, test: &TestDef, m: &Module, env: Env, procs: &Procs) ->
     out += "  int ovc_fails = 0;\n  bit ovc_done = 0;\n  string ovc_at = \"\";\n  bit ovc_taken [8];\n";
     out += &format!("  {} dut (.*);\n", m.name);
     if clock {
-        out += "  initial clk = 0;\n  always #5 clk = ~clk;\n";
+        out += &format!("  initial {clk} = 0;\n  always #5 {clk} = ~{clk};\n");
     }
     out += "  initial begin\n";
     for l in &t.lines {
         out += &format!("    {l}\n");
     }
     out += "    ovc_done = 1;\n  end\n";
-    let wait = if clock { format!("repeat ({timeout}) @(posedge clk)") } else { format!("#{}", 10 * timeout) };
+    let wait = if clock { format!("repeat ({timeout}) @(posedge {clk})") } else { format!("#{}", 10 * timeout) };
     out += &format!(
         "  initial begin {wait}; if (!ovc_done) begin ovc_fails++; ovc_done = 1;\n    $display(\"  FAIL {origin}:{} [{}] timeout after {timeout} cycles, at %s\", ovc_at); end end\nendmodule\n",
         test.pos.0, test.name
@@ -110,6 +113,8 @@ struct Writer<'a> {
     env: Env,
     procs: &'a Procs,
     clock: bool,
+    /// The name of the design's clock, as declared (the testbench drives the port of that name).
+    clk: String,
     reset: Option<(String, bool)>,
     test: &'a TestDef,
     /// Names bound while the statements run: procedure arguments, loop indices, `val`s.
@@ -181,7 +186,8 @@ impl Writer<'_> {
 
     fn cycles(&mut self, n: i64) {
         if self.clock {
-            self.w(&if n == 1 { "@(negedge clk);".to_string() } else { format!("repeat ({n}) @(negedge clk);") });
+            let clk = &self.clk;
+            self.w(&if n == 1 { format!("@(negedge {clk});") } else { format!("repeat ({n}) @(negedge {clk});") });
         } else {
             self.w(&format!("#{};", 10 * n));
         }
@@ -337,7 +343,7 @@ impl Writer<'_> {
                     Some(l) => int_of(&self.value(l)).ok_or_else(|| self.fail("max cycles must be constant", line))?,
                     None => DEFAULT_TIMEOUT,
                 };
-                let clk = if self.clock { "@(negedge clk)" } else { "#10" };
+                let clk = if self.clock { format!("@(negedge {})", self.clk) } else { "#10".to_string() };
                 self.w(&format!("for (int n = 0; n < {limit} && {}; n++) {clk};", not_true(&text)));
                 self.w(&format!("if ({}) begin", not_true(&text)));
                 self.w(&format!(
@@ -387,7 +393,8 @@ impl Writer<'_> {
     }
 
     fn wait_for(&mut self, cond: &str, what: &str, place: &str) {
-        self.w(&format!("for (int n = 0; n < {DEFAULT_TIMEOUT} && !{cond}; n++) @(negedge clk);"));
+        let clk = self.clk.clone();
+        self.w(&format!("for (int n = 0; n < {DEFAULT_TIMEOUT} && !{cond}; n++) @(negedge {clk});"));
         self.w(&format!("if (!{cond}) begin"));
         self.w(&format!("  ovc_fails++; $display(\"  FAIL {place} [{}] {what}: no transfer in {DEFAULT_TIMEOUT} cycles\");", self.test.name));
         self.w("end");
@@ -421,7 +428,8 @@ impl Writer<'_> {
             for (k, (v, r, _)) in streams.iter().enumerate() {
                 self.w(&format!("  ovc_taken[{k}] = {v} && {r};"));
             }
-            self.w("  @(negedge clk);");
+            let clk = self.clk.clone();
+            self.w(&format!("  @(negedge {clk});"));
             for (k, (v, _, _)) in streams.iter().enumerate() {
                 self.w(&format!("  if (ovc_taken[{k}]) {v} = 0;"));
             }

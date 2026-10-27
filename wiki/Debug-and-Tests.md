@@ -7,6 +7,9 @@ in between. The compiler adds the ports on the way up and down.
 
 ```systemverilog ov
 module Counter(input clk, input rst, input hold = 0, output logic [7:0] q) {
+  clock clk;
+  reset rst;
+
   always_ff @(posedge clk) { if (rst) { q <= 0; } else if (!hold) { q <= q + 1; } }
 }
 module Cluster(input clk, input rst, output logic [7:0] sum) {
@@ -15,6 +18,9 @@ module Cluster(input clk, input rst, output logic [7:0] sum) {
   assign sum = q.list().reduce(^);
 }
 module Soc(input clk, input rst, input dbg_halt, output logic [7:0] sum, output logic [7:0] probe) {
+  clock clk;
+  reset rst;
+
   Cluster cluster(.clk, .rst, .sum);
   assign probe = cluster.c[2].q;          // read three levels down: ports are added on the way up
   assign cluster.c[2].hold = dbg_halt;    // drive an input that has a default: ports are added on the way down
@@ -33,6 +39,9 @@ when the probe file is emitted, and removed from the design itself.
 
 ```systemverilog ov
 module Pe(input clk, input rst, input logic [1:0] mode, input logic [7:0] din, output logic [7:0] acc) {
+  clock clk;
+  reset rst;
+
   logic [7:0] prod;
   assign prod = (din * 3).wrap();
   always_ff @(posedge clk) { if (rst) { acc <= 0; } else if (mode == 2) { acc <= (acc + prod).wrap(); } }
@@ -64,6 +73,9 @@ A `test` block drives a module and checks its outputs. It is written next to the
 
 ```systemverilog ov
 module Counter<int W = 8>(input clk, input rst, input en, output logic [W-1:0] q) {
+  clock clk;
+  reset rst;
+
   always_ff @(posedge clk) { if (rst) { q <= 0; } else if (en) { q <= (q + 1).wrap(); } }
 }
 

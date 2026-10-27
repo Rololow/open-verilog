@@ -58,6 +58,9 @@ reads can happen in the same cycle. Here a register file has two read ports and 
 
 ```systemverilog ov
 module RegFile(input clk, input rst, input logic we, input logic [1:0] wa, input logic [7:0] wd) {
+  clock clk;
+  reset rst;
+
   logic [7:0] mem [4];
   always_ff @(posedge clk) {
     if (we) { mem[wa] <= wd; }
@@ -101,10 +104,14 @@ values can share one `case` arm.
 
 ```systemverilog ov
 module Cell<int W = 8>(input clk, input logic [W-1:0] d, output logic [W-1:0] q) {
+  clock clk;
+
   always_ff @(posedge clk) { q <= d; }
 }
 
 module Shift<int N = 4, int W = 8>(input clk, input logic [W-1:0] d, output logic [W-1:0] q) {
+  clock clk;
+
   logic [W-1:0] stage [N+1];
   assign stage[0] = d;
   for i in 0..N {

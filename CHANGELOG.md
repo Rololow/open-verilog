@@ -5,6 +5,8 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-27
+
 ### Added
 - `ovc --version` (and `-V`) prints the version of the build.
 - `ovc build -f LIST`: the inputs are read from a file list (one path per line, `//` comments, directories searched).
@@ -18,6 +20,12 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
   instances of a loop listed in "has no instance" messages.
 
 ### Changed
+- **Breaking:** the clock and the reset are declared, never guessed. A module with clocked blocks needs `clock <name>;`,
+  and a module that resets its registers or pipelines needs `reset <name> [low] [async];`. The names `clk`, `rst`,
+  `rst_n` are no longer recognised from the ports. A clocked block without a declared clock is an error, with the line to
+  add. The protocol monitors, the probes, the testbenches and the delay registers use the declared names.
+- A reset is a declared signal only: an `if (x)` in a block is not a reset because of its name or its body (an enable
+  that writes data is not one).
 - `ovc build` writes `files.f` with paths relative to the working directory when they are below it, absolute otherwise.
   A source outside `--root` is an error (use `--root`).
 - A `$error` in the design fails the tests too (the testbench counts it, as it counts the handshake checks).

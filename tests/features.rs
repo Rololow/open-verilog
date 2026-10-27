@@ -52,6 +52,9 @@ fn memmap_rejects_overlapping_devices() {
 #[test]
 fn a_vector_of_bundles_is_one_bundle_per_element() {
     let out = sv("module M<int N = 2>(input clk, input rst, slave Vec<Stream<logic [7:0]>, N> in, master Stream<logic [7:0]> out) {
+  clock clk;
+  reset rst;
+
   assign out.valid = in.valid[1];
   assign out.data = in.data[1];
   for i in 0..N { assign in[i].ready = out.ready; }
@@ -65,7 +68,10 @@ fn a_vector_of_bundles_is_one_bundle_per_element() {
 #[test]
 fn bundles_nest_and_flip_with_the_role() {
     let out = sv("bundle Pair { output Stream<logic [3:0]> a; input Stream<logic [3:0]> b; }
-module M(input clk, input rst, slave Pair p) { assign p.b.valid = p.a.valid; assign p.a.ready = 1; assign p.b.data = p.a.data; }");
+module M(input clk, input rst, slave Pair p) {
+  clock clk;
+  reset rst;
+ assign p.b.valid = p.a.valid; assign p.a.ready = 1; assign p.b.data = p.a.data; }");
     assert!(out.contains("input logic p_a_valid"));
     assert!(out.contains("output logic p_a_ready"));
     assert!(out.contains("output logic p_b_valid"));
@@ -75,6 +81,9 @@ module M(input clk, input rst, slave Pair p) { assign p.b.valid = p.a.valid; ass
 #[test]
 fn a_procedural_function_is_expanded_at_its_calls() {
     let out = sv("module M(input clk, input rst, input logic go, output logic [3:0] q) {
+  clock clk;
+  reset rst;
+
   reg [3:0] a, b;
   fn load(x, y) { a <= x; b <= y; }
   always_ff { if (go) { load(1, 2); } }
@@ -86,8 +95,14 @@ fn a_procedural_function_is_expanded_at_its_calls() {
 
 #[test]
 fn module_enums_are_local_to_their_module() {
-    let out = sv("module A(input clk, input rst, output logic y) { enum St { X, Y } reg [0:0] s; always_ff { s <= St.Y; } assign y = s; }
-module B(input clk, input rst, output logic y) { enum St { P, Q } reg [0:0] s; always_ff { s <= St.Q; } assign y = s; }");
+    let out = sv("module A(input clk, input rst, output logic y) {
+  clock clk;
+  reset rst;
+ enum St { X, Y } reg [0:0] s; always_ff { s <= St.Y; } assign y = s; }
+module B(input clk, input rst, output logic y) {
+  clock clk;
+  reset rst;
+ enum St { P, Q } reg [0:0] s; always_ff { s <= St.Q; } assign y = s; }");
     assert!(out.contains("St_Y"));
     assert!(out.contains("St_Q"));
 }
@@ -125,6 +140,9 @@ fn tie_off_drives_the_idle_values() {
 fn streams_are_driven_by_send_and_received_by_recv() {
     let src = "fn put(d) { send(in, d); }
 module Pass(input clk, input rst, slave Stream<logic [7:0]> in, master Stream<logic [7:0]> out) {
+  clock clk;
+  reset rst;
+
   assign out.valid = in.valid;
   assign out.data = in.data;
   assign in.ready = out.ready;
@@ -244,6 +262,9 @@ module Dup(input logic [1:0] a, output logic [1:0] y) {
 fn an_output_reg_is_reset_like_a_local_reg() {
     // the implicit always_ff resets the registers it writes: an output reg port too, to 0
     let out = sv("module R(input logic clk, input logic rst, input logic en, output reg [3:0] cnt) {
+  clock clk;
+  reset rst;
+
   always_ff { if (en) { cnt <= cnt + 1; } }
 }");
     assert!(out.contains("if (rst) begin\n      cnt <= 0;"), "{out}");

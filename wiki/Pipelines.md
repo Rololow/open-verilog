@@ -13,6 +13,9 @@ belongs to another instruction.
 pipeline Mac(input clk, input rst, input logic valid_in,
              input logic [7:0] a, input logic [7:0] b, input logic [7:0] c,
              output logic [15:0] y, output logic valid_out) {
+  clock clk;
+  reset rst;
+
   stage mul { val p = a * b; }
   stage add { val s = p + add.c; }
   stage out { assign y = s; }
@@ -89,6 +92,9 @@ pipeline must say so to its producer, so it needs a `ready_out` port:
 ```systemverilog ov
 pipeline Stall(input clk, input rst, input logic valid_in, output logic ready_out, input logic [7:0] a,
                input logic wait_mem, output logic [7:0] y, output logic valid_out) {
+  clock clk;
+  reset rst;
+
   stage fetch { val x = a + 1; stall_when(wait_mem); }
   stage exec  { val z = x * 2; }
   stage out   { assign y = z.wrap(); }
@@ -106,6 +112,9 @@ stage, so it is written `pipe.taken` (its value now), not `taken` (see [Inputs](
 ```systemverilog ov
 pipeline Flush(input clk, input rst, input logic valid_in, input logic [7:0] a,
                input logic taken, output logic [7:0] y, output logic valid_out) {
+  clock clk;
+  reset rst;
+
   stage fetch { val x = a + 1; }
   stage decode { val d = x + 1; flush_when(pipe.taken); }
   stage exec  { val z = d + 1; }
@@ -121,6 +130,9 @@ faulting instruction itself. `flush_younger_when` does that:
 ```systemverilog ov
 pipeline Younger(input clk, input rst, input logic valid_in, input logic [7:0] a,
                  input logic trap, output logic [7:0] y, output logic valid_out) {
+  clock clk;
+  reset rst;
+
   stage fetch { val x = a + 1; }
   stage decode { val d = x + 1; }
   stage exec  { val z = d + 1; flush_younger_when(pipe.trap); }
@@ -160,6 +172,8 @@ next clock edge while the reset is high.
 ```systemverilog ov
 pipeline Async(input clk, input rstn, input logic valid_in, input logic [7:0] a,
                output logic [7:0] y, output logic valid_out) {
+  clock clk;
+
   reset rstn low async;
   stage first { val x = a + 1; }
   stage out   { assign y = x.wrap(); }
@@ -176,6 +190,9 @@ pipeline AddChain<int N = 4>(
   input clk, input rst, input logic valid_in, input logic [7:0] d,
   output logic [7:0] y, output logic valid_out
 ) {
+  clock clk;
+  reset rst;
+
   logic [7:0] v [N+1];
   stage first { assign v[0] = d; }
   for i in 0..N {

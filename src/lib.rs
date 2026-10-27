@@ -23,7 +23,7 @@ pub mod regmap;
 pub mod testgen;
 pub mod toml;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use ast::File;
 use error::{Error, Result};
 
@@ -145,7 +145,7 @@ pub fn lint_parsed(parsed: Vec<File>, top: Option<&ast::DType>) -> Result<LintOu
 fn lint_top(source: &File, top: Option<&ast::DType>, wrapped: &checks::Wrapped) -> Result<(Vec<String>, Vec<Error>)> {
     let elab::Elaborated { mut modules, warnings, handshakes, envs, .. } = elab::elaborate(source, "<lint>", false, false, top)?;
     hier::thread(&mut modules, "<lint>")?;
-    let (domain_warnings, errors) = domains::check_all(&modules, &handshakes);
+    let (domain_warnings, errors) = domains::check_all(&modules, &handshakes, &declared_resets(&envs));
     let mut all = warnings;
     all.extend(domain_warnings);
     all.extend(checks::check(&modules, &envs, wrapped));
@@ -197,9 +197,9 @@ pub fn compile_parsed(parsed: Vec<File>, options: &Options) -> Result<Compiled> 
         elab::elaborate(&source, "<project>", options.asserts, options.cover, top.as_ref())?;
     hier::thread(&mut modules, "<project>")?;
     // the clock domains are checked on the design as elaborated and connected: children before parents
-    warnings.extend(domains::check(&modules, &handshakes)?);
+    warnings.extend(domains::check(&modules, &handshakes, &declared_resets(&envs))?);
     let tests_sv = if tests.is_empty() { None } else { Some(testgen::generate(&tests, &modules, &envs, &procs, "<project>")?) };
-    let probes_sv = if probes.is_empty() { None } else { Some(probes::generate(&probes, &modules, "<project>")?) };
+    let probes_sv = if probes.is_empty() { None } else { Some(probes::generate(&probes, &modules, &envs, "<project>")?) };
     let packages: String = packages.iter().map(|(_, text)| text.as_str()).collect();
     let sv = format!("{packages}{}", emit::emit_modules(&modules, "<project>")?);
     let by_origin = split_by_origin(&modules)?;
@@ -263,4 +263,9 @@ fn merge(design: &mut File, unit: File) -> Result<()> {
     design.test_loops.extend(unit.test_loops);
     design.probes.extend(unit.probes);
     Ok(())
+}
+
+/// The reset each module declares (`reset rst;`), by module name.
+fn declared_resets(envs: &HashMap<String, elab::env::Env>) -> HashMap<String, Option<String>> {
+    envs.iter().map(|(name, env)| (name.clone(), env.reset().map(|r| r.name.clone()))).collect()
 }

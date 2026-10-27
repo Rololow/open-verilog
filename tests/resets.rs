@@ -7,6 +7,9 @@ use ovc::lint::{self, Options};
 
 const CORE: &str = "
 module Core(input clk, input i_rst, input logic [7:0] d, output logic [7:0] q) {
+  clock clk;
+  reset i_rst low;
+
   always_ff @(posedge clk) { if (!i_rst) { q <= 0; } else { q <= d; } }
 }
 ";
@@ -27,6 +30,9 @@ fn async_reset_used_synchronously_in_a_child() {
     let src = format!(
         "{CORE}
 module Top(input clk, input bus_reset, input logic [7:0] d, output logic [7:0] q, output logic [7:0] r) {{
+  clock clk;
+  reset bus_reset;
+
   always_ff @(posedge clk or posedge bus_reset) {{ if (bus_reset) {{ r <= 0; }} else {{ r <= d; }} }}
   Core c(.clk, .i_rst(~bus_reset), .d, .q);
 }}"
@@ -43,6 +49,9 @@ fn polarity_follows_the_inversion_at_the_connection() {
     let ok = format!(
         "{CORE}
 module Top(input clk, input rst, input logic [7:0] d, output logic [7:0] q, output logic [7:0] r) {{
+  clock clk;
+  reset rst;
+
   always_ff @(posedge clk) {{ if (rst) {{ r <= 0; }} else {{ r <= d; }} }}
   Core c(.clk, .i_rst(~rst), .d, .q);
 }}"
@@ -56,6 +65,9 @@ module Top(input clk, input rst, input logic [7:0] d, output logic [7:0] q, outp
 fn both_polarities_in_one_module() {
     let src = "
 module M(input clk, input rst, input logic [7:0] d, output logic [7:0] a, output logic [7:0] b) {
+  clock clk;
+  reset rst;
+
   always_ff @(posedge clk) { if (rst) { a <= 0; } else { a <= d; } }
   always_ff @(posedge clk) { if (rst == 0) { b <= 0; } else { b <= d; } }
 }";
@@ -67,6 +79,9 @@ fn reported_once_where_the_uses_meet() {
     let src = format!(
         "{CORE}
 module Mid(input clk, input rst, input logic [7:0] d, output logic [7:0] q, output logic [7:0] r) {{
+  clock clk;
+  reset rst;
+
   always_ff @(posedge clk or negedge rst) {{ if (!rst) {{ r <= 0; }} else {{ r <= d; }} }}
   Core c(.clk, .i_rst(rst), .d, .q);
 }}
@@ -89,6 +104,9 @@ module Mid(input clk, input rst, input logic [7:0] d, output logic [7:0] q) {{
   Core c(.clk, .i_rst(rst), .d, .q);
 }}
 module Top(input clk, input rst, input logic [7:0] d, output logic [7:0] q, output logic [7:0] r) {{
+  clock clk;
+  reset rst;
+
   always_ff @(posedge clk or negedge rst) {{ if (!rst) {{ r <= 0; }} else {{ r <= d; }} }}
   Mid m(.clk, .rst, .d, .q);
 }}"
@@ -106,9 +124,13 @@ fn sv_lint_reports_the_reset_category() {
     fs::write(
         &file,
         "module core(input logic clk, input logic i_rst, input logic [7:0] d, output logic [7:0] q);
+  clock clk;
+  reset i_rst low;
   always_ff @(posedge clk) if (!i_rst) q <= 0; else q <= d;
 endmodule
 module top(input logic clk, input logic rst, input logic [7:0] d, output logic [7:0] q, output logic [7:0] r);
+  clock clk;
+  reset rst;
   always_ff @(posedge clk or posedge rst) if (rst) r <= 0; else r <= d;
   core c(.clk(clk), .i_rst(~rst), .d(d), .q(q));
 endmodule
@@ -127,10 +149,31 @@ endmodule
 }
 
 #[test]
+fn a_write_enable_is_not_a_reset() {
+    // a RAM whose enable is a signal of the top: `if (we) { mem[a] <= d; }` writes data, it resets nothing
+    let src = "
+module Ram(input clk, input we, input logic [1:0] a, input logic [7:0] d, output logic [7:0] q) {
+  clock clk;
+
+  logic [7:0] mem [4];
+  always_ff @(posedge clk) { if (we) { mem[a] <= d; } }
+  assign q = mem[a];
+}
+module Top(input clk, input word, input logic [1:0] a, input logic [7:0] d, output logic [7:0] q1, output logic [7:0] q2) {
+  Ram ra(.clk, .we(word), .a, .d, .q(q1));
+  Ram rb(.clk, .we(!word), .a, .d, .q(q2));
+}";
+    assert!(warnings(src).is_empty(), "{:?}", warnings(src));
+}
+
+#[test]
 fn every_element_of_a_reg_array_is_reset() {
     // a reg array written in always_ff is reset element by element (a v3 counter array stayed X before this)
     let src = "
 module M(input clk, input rst, input logic en, input logic [1:0] i, output logic [15:0] q) {
+  clock clk;
+  reset rst;
+
   reg [15:0] cnt [4];
   always_ff { if (en) { cnt[i] <= cnt[i] + 1; } }
   assign q = cnt[i];

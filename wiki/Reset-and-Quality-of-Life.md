@@ -4,8 +4,11 @@ Most of the code a module needs is the same in every module: a clock, a reset, a
 signal whose width is the sum of its operands. Open Verilog states these once.
 
 ```systemverilog ov
-// `clk` and `rst` are detected; `reg x = init` is reset to init by `always_ff { }` (no @).
+// the clock and the reset are declared; `reg x = init` is reset to init by `always_ff { }` (no @).
 module Counter2<int W = 8>(input clk, input rst, input en, output logic [W-1:0] q) {
+  clock clk;
+  reset rst;
+
   reg [W-1:0] cnt = 0;
   always_ff {
     if (en) { cnt <= cnt + 1; }
@@ -15,6 +18,8 @@ module Counter2<int W = 8>(input clk, input rst, input en, output logic [W-1:0] 
 
 // explicitly declared active-low asynchronous reset
 module Flag(input clk, input rstn, input set, input clr, output logic f) {
+  clock clk;
+
   reset rstn low async;
   reg r = 0;
   always_ff {
@@ -36,6 +41,12 @@ pipeline Mac2(
   input logic [7:0] a, input logic [7:0] b, input logic [7:0] c,
   output logic [15:0] y, output logic valid_out
 ) {
+  clock clk;
+  reset rst;
+
+  clock clk;
+  reset rst;
+
   stage mul { val p = a * b; }
   stage add { val s = p + add.c; }
   stage out { assign y = s.wrap(); }
@@ -44,7 +55,7 @@ pipeline Mac2(
 
 ## Clock and reset
 
-- The module's clock and reset are found from their names (`clk`, `rst`). `always_ff { }` without an event is clocked by
+- The module's clock and reset are the ones it declares (`clock clk;`, `reset rst;`): no name is guessed. `always_ff { }` without an event is clocked by
   the clock of the module.
 - `reg x = init` is a register reset to `init`. The reset is written once for all the registers of the block; the
   SystemVerilog equivalent is a reset branch that lists every register.

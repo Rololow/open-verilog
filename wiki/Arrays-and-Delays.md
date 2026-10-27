@@ -6,11 +6,14 @@ writes the reset by hand.
 
 ## A bank of hold counters
 
-Open Verilog. A `reg` array is reset to zero by the implicit clock and reset, so there is no reset code.
+Open Verilog. A `reg` array is reset to zero by the clock and reset the module declares, so there is no reset code.
 
 ```systemverilog ov
 module BankHold<int NB = 4, int HOLD = 8>(input clk, input rst,
                                           input logic [clog2(NB)-1:0] issue_bank, input logic issue) {
+  clock clk;
+  reset rst;
+
   reg [7:0] hold [NB];
   always_ff {
     for bank in 0..NB {
@@ -52,6 +55,8 @@ Open Verilog. `delay(D)` is a chain of `D` registers.
 
 ```systemverilog ov
 module Lanes<int N = 8, int W = 16, int D = 3>(input clk, input logic [W-1:0] x [N], output logic [W-1:0] y [N]) {
+  clock clk;
+
   for lane in 0..N { assign y[lane] = x[lane].delay(D); }
 }
 ```
@@ -80,7 +85,7 @@ endmodule
 ## What changes
 
 - The bounds (`NB`, `N`, `D`) are written once. In SystemVerilog they appear in the loop, the declaration and the reset.
-- Reset is implicit for `reg`. In SystemVerilog it is a loop you have to write.
+- The reset of a `reg` is written once, from the module's declared reset. In SystemVerilog it is a loop you have to write.
 - `delay(D)` replaces the two-dimensional register array, its two loops and the index `[D-1]`.
 
 ## What the compiler writes

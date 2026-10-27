@@ -1,6 +1,9 @@
 //! The standard library: available without an import, emitted only where it is used.
 
 const TOP: &str = "module Top(input clk, input rst, slave Stream<logic [7:0]> inp, master Stream<logic [7:0]> outp, output logic [2:0] count) {
+  clock clk;
+  reset rst;
+
   Fifo<logic [7:0], 4> f(.clk, .rst, .in(inp), .out(outp), .count);
 }";
 

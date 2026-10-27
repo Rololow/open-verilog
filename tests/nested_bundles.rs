@@ -27,10 +27,16 @@ bundle Rd {
   input Stream<logic [31:0]> r;
 }
 module Mem(input clk, input rst, slave Rd s) {
+  clock clk;
+  reset rst;
+
   Stream<logic [31:0]> q;
   Fifo<logic [31:0], 2> f(.clk, .rst, .in(s.r), .out(q), .count());
 }
 module Src(input clk, input rst, master Rd m) {
+  clock clk;
+  reset rst;
+
   assign m.ar.valid = 1;
   assign m.ar.data.addr = 'h100;
   assign m.ar.data.len = 3;
@@ -93,6 +99,9 @@ fn local_nested_bundle_links_two_modules() {
     let src = format!(
         "{RD}
 module Sink(input clk, input rst, slave Rd s) {{
+  clock clk;
+  reset rst;
+
   assign s.ar.ready = 1;
   assign s.r.valid = s.ar.valid;
   assign s.r.data = s.ar.data.addr;
@@ -122,6 +131,9 @@ bundle AxiRd<int AW = 32, int DW = 32, int IW = 4> {
   input Stream<logic [DW-1:0]> r;
 }
 module Src(input clk, input rst, master AxiRd<40, 64, 2> m, output logic [7:0] s) {
+  clock clk;
+  reset rst;
+
   assign m.ar.valid = 1;
   assign m.ar.data.addr = 0;
   assign m.ar.data.id = 1;
@@ -145,6 +157,9 @@ fn generic_struct_defaults_and_cache() {
     let src = format!(
         "{GENERIC}
 module Two(input clk, input rst, master AxiRd m, master AxiRd<32, 32, 4> n) {{
+  clock clk;
+  reset rst;
+
   assign m.ar.valid = 0; assign m.ar.data = 0; assign m.r.ready = 0;
   assign n.ar.valid = 0; assign n.ar.data = 0; assign n.r.ready = 0;
 }}"
@@ -162,6 +177,9 @@ fn same_width_structs_are_different_types() {
 struct A { logic [31:0] data; logic last; logic err; }
 struct B { logic [31:0] data; logic [1:0] resp; }
 module M(input clk, input rst, slave Stream<A> a, slave Stream<B> b, output logic [1:0] r, output logic l) {
+  clock clk;
+  reset rst;
+
   assign a.ready = 1;
   assign b.ready = 1;
   assign r = b.data.resp;

@@ -2,6 +2,10 @@
 
 // `clk` and `rst` are detected; `reg x = init` is reset to init by `always_ff { }` (no @).
 module Counter2<int W = 8>(input clk, input rst, input en, output logic [W-1:0] q) {
+  reset rst;
+
+  clock clk;
+
   reg [W-1:0] cnt = 0;
   always_ff {
     if (en) { cnt <= cnt + 1; }
@@ -11,6 +15,7 @@ module Counter2<int W = 8>(input clk, input rst, input en, output logic [W-1:0] 
 
 // explicitly declared active-low asynchronous reset
 module Flag(input clk, input rstn, input set, input clr, output logic f) {
+  clock clk;
   reset rstn low async;
   reg r = 0;
   always_ff {
@@ -32,6 +37,10 @@ pipeline Mac2(
   input logic [7:0] a, input logic [7:0] b, input logic [7:0] c,
   output logic [15:0] y, output logic valid_out
 ) {
+  reset rst;
+
+  clock clk;
+
   stage mul { val p = a * b; }
   stage add { val s = p + add.c; }
   stage out { assign y = s.wrap(); }

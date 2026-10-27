@@ -5,6 +5,9 @@ const SRC: &str = "
 bundle Req { output logic valid = 0; input logic ready = 1; output logic [7:0] addr = 'h40; }
 bundle Bus { output Req req; input Stream<logic [7:0]> resp; }
 module Mem(input clk, input rst, slave Bus b, output logic seen) {
+  clock clk;
+  reset rst;
+
   assign b.req.ready = 1;
   assign b.resp.valid = 0;
   assign b.resp.data = 0;
@@ -33,7 +36,9 @@ fn unconnected_bundle_port_is_idle_and_tie_off_drives_the_master_side() {
 
 #[test]
 fn tie_off_takes_a_bundle_signal() {
-    let err = ovc::compile("module M(input clk, slave Stream<logic> s) { tie_off(s); }", "t.ov").expect_err("a port");
+    let err = ovc::compile("module M(input clk, slave Stream<logic> s) {
+  clock clk;
+ tie_off(s); }", "t.ov").expect_err("a port");
     assert!(err.message.contains("tie_off() takes a bundle signal"), "{}", err.message);
     let err = ovc::compile("module M(input clk) { Vec<Stream<logic>, 2> v; tie_off(v); }", "t.ov").expect_err("a vector");
     assert!(err.message.contains("an element of the Vec"), "{}", err.message);

@@ -20,6 +20,8 @@ fn make_project(root: &Path) {
         (
             "src/rtl/sub/reg.ov",
             "module Reg<int W = 4>(input clk, input logic [W-1:0] d, output logic [W-1:0] q) {
+  clock clk;
+
   always_ff @(posedge clk) { q <= d; }
 }",
         ),
@@ -95,7 +97,10 @@ fn errors_name_the_right_file() {
     make_project(&dir);
     fs::write(
         dir.join("src/rtl/sub/reg.ov"),
-        "module Reg<int W = 4>(input clk, input logic [W-1:0] d, output logic [W-1:0] q) {\n  always_ff @(posedge clk) { q <= dd; }\n}\n",
+        "module Reg<int W = 4>(input clk, input logic [W-1:0] d, output logic [W-1:0] q) { clock clk;
+  always_ff @(posedge clk) { q <= dd; }
+}
+",
     )
     .unwrap();
     let (ok, err) = ovc(&dir, &["build", "src"]);
@@ -144,6 +149,8 @@ fn concat_lvalue_statement() {
     let c = compile_one(
         "
 module M(input clk, input logic [7:0] d, output logic [3:0] hi, output logic [3:0] lo) {
+  clock clk;
+
   always_ff @(posedge clk) { {hi, lo} <= d; }
 }",
     );

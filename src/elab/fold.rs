@@ -33,13 +33,21 @@ fn truth(e: Expr, env: &Env) -> Expr {
 const FOLD_TERMS: usize = 200_000;
 
 thread_local! {
-    /// Set when a fold grew past `FOLD_TERMS`: the module being elaborated is refused.
-    static FOLD_OVERFLOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The first error found while folding (a fold past `FOLD_TERMS`, a block without its clock): the module being
+    /// elaborated is refused with it.
+    static FOLD_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Whether a fold of the module just elaborated grew past its term limit (and clears the mark).
-pub(crate) fn take_fold_overflow() -> bool {
-    FOLD_OVERFLOW.with(|f| f.replace(false))
+/// Records an error found where a value cannot return one (the first one is kept).
+pub(crate) fn note_fold_error(msg: impl Into<String>) {
+    FOLD_ERROR.with(|f| {
+        f.borrow_mut().get_or_insert_with(|| msg.into());
+    });
+}
+
+/// The error recorded while folding the module just elaborated, if any (and clears it).
+pub(crate) fn take_fold_error() -> Option<String> {
+    FOLD_ERROR.with(|f| f.borrow_mut().take())
 }
 
 /// The number of terms of an expression, as a tree (a shared sub-expression counts at each use).
@@ -643,10 +651,21 @@ fn exact_operands(e: &Expr, env: &Env) -> Expr {
         // extend the signed operand with zeros (`acc + $signed(a) * $signed(b)`)
         Expr::Binary(op, l, r, pos) if matches!(op.as_str(), "+" | "-") => {
             let Some(bits) = wrap_width(e, env) else { return e.clone() };
-            let widen = |x: &Expr| if has_signed(x) { Expr::Cast(boxed(num(i64::from(bits))), boxed(x.clone())) } else { x.clone() };
-            Expr::Binary(op.clone(), boxed(widen(l)), boxed(widen(r)), *pos)
+            Expr::Binary(op.clone(), boxed(widen_signed(l, bits)), boxed(widen_signed(r, bits)), *pos)
         }
         other => other.clone(),
+    }
+}
+
+/// Widens the signed operands of an arithmetic tree to `bits`, at the leaves: the sum is then computed at that width. A
+/// cast around the whole sum would size the sum by its own operands first, and lose its carries.
+fn widen_signed(e: &Expr, bits: u32) -> Expr {
+    match e {
+        Expr::Binary(op, a, b, pos) if matches!(op.as_str(), "+" | "-" | "*") => {
+            Expr::Binary(op.clone(), boxed(widen_signed(a, bits)), boxed(widen_signed(b, bits)), *pos)
+        }
+        _ if has_signed(e) => Expr::Cast(boxed(num(i64::from(bits))), boxed(e.clone())),
+        _ => e.clone(),
     }
 }
 
@@ -806,7 +825,7 @@ fn list_method(base: &Expr, method: &str, args: &[Expr], env: &Env, pos: Pos) ->
                 acc = fold_expr(&substitute(body, &[acc_name.clone(), x_name.clone()], &args), env);
                 // a value that uses its accumulator twice doubles at each step: refused once it is too big
                 if term_count(&acc) > FOLD_TERMS {
-                    FOLD_OVERFLOW.with(|f| f.set(true));
+                    note_fold_error("a fold builds more than 200000 terms: its value uses its accumulator more than once, so it doubles at each step");
                     break;
                 }
             }
@@ -872,10 +891,15 @@ fn list_method(base: &Expr, method: &str, args: &[Expr], env: &Env, pos: Pos) ->
             for j in 2..=k {
                 stmts.push(Stmt::Assign { lhs: Expr::Ident(reg(j), pos), rhs: Expr::Ident(reg(j - 1), pos), nonblocking: true, pos });
             }
+            // the module refuses to compile without its clock, so the placeholder is never written
+            let clock = env.clock().map(str::to_string).unwrap_or_else(|| {
+                note_fold_error("a delay register needs the module's clock: declare `clock clk;` in the module");
+                String::new()
+            });
             env.push_delay_block(Item {
                 pos,
                 kind: ItemKind::Always {
-                    sens: Sens::Edges(vec![("posedge".into(), Expr::Ident("clk".into(), pos))]),
+                    sens: Sens::Edges(vec![("posedge".into(), Expr::Ident(clock, pos))]),
                     body: Stmt::Block(stmts),
                     keyword: "always_ff".into(),
                 },

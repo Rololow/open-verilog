@@ -20,6 +20,9 @@ bundle Stream<type T> {
 }
 
 module Source(input clk, input rst, master Stream<logic [7:0]> out) {
+  clock clk;
+  reset rst;
+
   reg [7:0] n = 0;
   always_ff {
     if (out.fire()) { n <= n + 1; }
@@ -30,6 +33,9 @@ module Source(input clk, input rst, master Stream<logic [7:0]> out) {
 
 module Sink(input clk, input rst, input go, slave Stream<logic [7:0]> in,
             output logic got, output logic [7:0] got_data) {
+  clock clk;
+  reset rst;
+
   assign in.ready = go;
   assign got = in.fire();
   assign got_data = in.data;

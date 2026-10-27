@@ -7,6 +7,8 @@ use ovc::Options;
 
 const LIB: &str = "
 module Leaf(input clk, input logic [7:0] d, input stall = 0, output logic [7:0] q) {
+  clock clk;
+
   logic [7:0] secret;
   logic [7:0] mem [4];
   always_ff @(posedge clk) { if (!stall) { secret <= d; q <= secret; mem[d[1:0]] <= d; } }
@@ -37,6 +39,8 @@ fn read_deep_signal_threads_output_ports() {
     let sv = sv_of(
         "
 module Top(input clk, input logic [7:0] d, output logic [7:0] q, output logic [7:0] probe) {
+  clock clk;
+
   Mid mid(.clk, .d, .q);
   assign probe = mid.leaf.secret;
 }",
@@ -52,6 +56,8 @@ fn same_tap_twice_and_from_a_process_is_threaded_once() {
     let sv = sv_of(
         "
 module Top(input clk, input logic [7:0] d, output logic [7:0] q, output logic [7:0] a, output logic [7:0] b) {
+  clock clk;
+
   Mid mid(.clk, .d, .q);
   assign a = mid.leaf.secret;
   always_ff @(posedge clk) { b <= mid.leaf.secret + 1; }
@@ -146,6 +152,8 @@ fn simulates() {
     let sv = sv_of(
         "
 module Top(input clk, input logic [7:0] d, input halt, output logic [7:0] q, output logic [7:0] probe) {
+  clock clk;
+
   Mid mid(.clk, .d, .q);
   assign probe = mid.leaf.secret;
   assign mid.leaf.stall = halt;

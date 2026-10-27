@@ -14,7 +14,7 @@ fn one_module_per_test_and_a_report() {
     assert!(tb.contains("Counter__4 dut (.*);"));
     assert!(tb.contains("repeat (253) @(negedge clk);"));
     assert!(tb.contains("if (((|(q == 0)) !== 1'b1)) begin"));
-    assert!(tb.contains("PASS  adds with carry  (testbench.ov:28)"));
+    assert!(tb.contains("PASS  adds with carry  (testbench.ov:31)"));
 }
 
 #[test]

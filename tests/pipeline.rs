@@ -3,6 +3,9 @@
 const MAC: &str = "pipeline Mac(input clk, input rst, input logic valid_in,
   input logic [7:0] a, input logic [7:0] b, input logic [7:0] c,
   output logic [15:0] y, output logic valid_out) {
+  clock clk;
+  reset rst;
+
   stage mul { logic [15:0] p = a * b; }
   stage add { logic [15:0] s = (p + add.c).wrap(); }
   stage out { assign y = s; }
@@ -34,6 +37,9 @@ fn mac_table_reports_latency_and_carries() {
 #[test]
 fn single_stage_has_no_registers() {
     let src = "pipeline One(input clk, input rst, input logic [3:0] d, output logic [3:0] y) {
+  clock clk;
+  reset rst;
+
       stage only { assign y = d + 1; }
     }";
     let out = ovc::compile_full(src, "one.ov").unwrap();
@@ -44,12 +50,16 @@ fn single_stage_has_no_registers() {
 #[test]
 fn reading_a_later_stage_points_at_the_name() {
     let src = "pipeline Bad(input clk, input rst, input logic [7:0] d, output logic [7:0] y) {
+  clock clk;
+  reset rst;
+
   stage s0 { logic [7:0] a = d; }
   stage s1 { logic [7:0] b = c + a; }
   stage s2 { logic [7:0] c = a; assign y = b; }
 }";
     let e = ovc::compile(src, "bad.ov").unwrap_err();
-    assert_eq!((e.line, e.col), (3, 30));
+    // the line of `c + a` (the source starts with the declarations of the pipeline)
+    assert_eq!((e.line, e.col), (6, 30));
     assert!(e.message.contains("write 's2.c' for explicit forwarding"));
 }
 
@@ -57,6 +67,9 @@ fn reading_a_later_stage_points_at_the_name() {
 fn stall_holds_earlier_stages_and_gates_ready() {
     let src = "pipeline Slow(input clk, input rst, input valid_in, input logic [7:0] d, input logic stall,
   output logic [7:0] y, output logic valid_out, output logic ready_out) {
+  clock clk;
+  reset rst;
+
   stage s0 { logic [7:0] a = (d + 1).wrap(); }
   stage s1 { logic [7:0] b = (a + 1).wrap(); stall_when(pipe.stall); }
   stage s2 { assign y = (b + 1).wrap(); }
@@ -73,6 +86,9 @@ fn stall_holds_earlier_stages_and_gates_ready() {
 fn stall_without_ready_out_warns() {
     let src = "pipeline NoReady(input clk, input rst, input valid_in, input logic [7:0] d, input logic stall,
   output logic [7:0] y) {
+  clock clk;
+  reset rst;
+
   stage s0 { logic [7:0] a = d; stall_when(pipe.stall); }
   stage s1 { assign y = a; }
 }";
@@ -85,6 +101,9 @@ fn stall_without_ready_out_warns() {
 fn flush_kills_the_entering_instruction() {
     let src = "pipeline Fl(input clk, input rst, input valid_in, input logic [7:0] d, input logic kill,
   output logic [7:0] y, output logic valid_out) {
+  clock clk;
+  reset rst;
+
   stage s0 { logic [7:0] a = d; }
   stage s1 { logic [7:0] b = a; flush_when(pipe.kill); }
   stage s2 { assign y = b; }
@@ -97,6 +116,9 @@ fn flush_kills_the_entering_instruction() {
 #[test]
 fn control_must_be_inside_a_stage() {
     let src = "pipeline Bad(input clk, input rst, input logic [7:0] d, input logic go, output logic [7:0] y) {
+  clock clk;
+  reset rst;
+
   stage s0 { logic [7:0] a = d; }
   stall_when(go);
   stage s1 { assign y = a; }
@@ -120,6 +142,9 @@ fn checks_are_emitted_unless_disabled() {
 fn pipeline_arrays_are_scalarized_and_chained() {
     let src = "pipeline Chain<int N = 2>(input clk, input rst, input logic valid_in, input logic [7:0] d,
   output logic [7:0] y, output logic valid_out) {
+  clock clk;
+  reset rst;
+
   logic [7:0] v [N+1];
   stage first { assign v[0] = d; }
   for i in 0..N {
@@ -138,6 +163,8 @@ fn pipeline_arrays_are_scalarized_and_chained() {
 fn a_pipeline_with_an_asynchronous_reset_clears_its_registers_on_the_reset_edge() {
     let out = ovc::compile(
         "pipeline A(input clk, input rstn, input logic valid_in, input logic [7:0] a, output logic [7:0] y, output logic valid_out) {
+  clock clk;
+
   reset rstn low async;
   stage first { val x = a + 1; }
   stage out { assign y = x.wrap(); }

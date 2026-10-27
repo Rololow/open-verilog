@@ -2,6 +2,9 @@
 // simulate with the extra top module ovc_probes and +ovc_probe (or +ovc_probe=pe_acc) to see them.
 
 module Pe(input clk, input rst, input logic [1:0] mode, input logic [7:0] din, output logic [7:0] acc) {
+  clock clk;
+  reset rst;
+
   logic [7:0] prod;
   assign prod = (din * 3).wrap();
   always_ff @(posedge clk) { if (rst) { acc <= 0; } else if (mode == 2) { acc <= (acc + prod).wrap(); } }

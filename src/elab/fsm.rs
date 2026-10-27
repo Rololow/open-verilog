@@ -44,13 +44,18 @@ pub fn lower(env: &Env, pos: Pos, file: &str, names: (&str, &str, &str), default
     }
     comb.push(Stmt::Case { subject: ident(name, pos), kind: "case".into(), arms: cases, pos });
 
-    // the module's reset (see `implicit_clocking`): its port and its polarity
-    let reset = env.reset().cloned().unwrap_or(super::env::ResetSpec { name: "rst".into(), low: false, is_async: false });
-    let active = ident(&reset.name, pos);
-    let register = Stmt::If {
-        cond: if reset.low { Expr::Unary("!".into(), Box::new(active)) } else { active },
-        then: Box::new(Stmt::Block(vec![assign(name, init_state.clone(), true, pos)])),
-        els: Some(Box::new(Stmt::Block(vec![assign(name, ident(&next, pos), true, pos)]))),
+    // the module's clock and reset, as declared (see `implicit_clocking`); without a reset the state has none
+    let clock = env.clock().ok_or_else(|| Error::new("an fsm needs the module's clock: declare `clock clk;` in the module", file, pos.0, pos.1))?.to_string();
+    let register = match env.reset().cloned() {
+        Some(reset) => {
+            let active = ident(&reset.name, pos);
+            Stmt::If {
+                cond: if reset.low { Expr::Unary("!".into(), Box::new(active)) } else { active },
+                then: Box::new(Stmt::Block(vec![assign(name, init_state.clone(), true, pos)])),
+                els: Some(Box::new(Stmt::Block(vec![assign(name, ident(&next, pos), true, pos)]))),
+            }
+        }
+        None => Stmt::Block(vec![assign(name, ident(&next, pos), true, pos)]),
     };
     let dtype = info.dtype.clone();
     Ok(vec![
@@ -60,7 +65,7 @@ pub fn lower(env: &Env, pos: Pos, file: &str, names: (&str, &str, &str), default
         Item {
             pos,
             kind: ItemKind::Always {
-                sens: Sens::Edges(vec![("posedge".into(), ident("clk", pos))]),
+                sens: Sens::Edges(vec![("posedge".into(), ident(&clock, pos))]),
                 body: register,
                 keyword: "always_ff".into(),
             },

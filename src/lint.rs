@@ -36,6 +36,8 @@ fn category(msg: &str) -> &'static str {
     let has = |s: &str| msg.contains(s);
     if has("clock-domain crossing") {
         "cdc"
+    } else if has("is signed but this expression is unsigned") || has("is extended from") {
+        "sign"
     } else if has("depends combinationally on") && has(".ready") {
         "handshake"
     } else if msg.starts_with("reset '") {

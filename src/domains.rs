@@ -58,8 +58,8 @@ pub struct Summary {
 }
 
 /// Checks every module (children before parents) and returns the warnings, or the first error.
-pub fn check(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>) -> Result<Vec<String>> {
-    let (warnings, errors) = check_all(modules, handshakes);
+pub fn check(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>, resets: &HashMap<String, Option<String>>) -> Result<Vec<String>> {
+    let (warnings, errors) = check_all(modules, handshakes, resets);
     match errors.into_iter().next() {
         Some(first) => Err(first),
         None => Ok(warnings),
@@ -68,13 +68,15 @@ pub fn check(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, 
 
 /// Every error and every warning of the check, not only the first error: a module with an error is left out (its
 /// summary is empty), and the modules after it are checked as before. `lint` reports all of them.
-pub fn check_all(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>) -> (Vec<String>, Vec<Error>) {
+/// `resets`: the reset each module declares (`reset rst;`), by module name: only that name is a reset in its blocks.
+pub fn check_all(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>, resets: &HashMap<String, Option<String>>) -> (Vec<String>, Vec<Error>) {
     let mut summaries: HashMap<String, Summary> = HashMap::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut errors: Vec<Error> = Vec::new();
     for m in modules {
         let empty = Vec::new();
-        let summary = match check_module(m, handshakes.get(&m.name).unwrap_or(&empty), &summaries, &mut warnings) {
+        let declared = resets.get(&m.name).cloned().flatten();
+        let summary = match check_module(m, handshakes.get(&m.name).unwrap_or(&empty), &summaries, declared.as_deref(), &mut warnings) {
             Ok(summary) => summary,
             Err(e) => {
                 errors.push(e);
@@ -250,6 +252,23 @@ fn assignments(s: &Stmt, conds: &BTreeSet<String>, out: &mut Vec<(BTreeSet<Strin
     }
 }
 
+/// The number of assignments of a statement, when every one of them assigns a constant; `None` when one does not.
+fn reset_assigns(s: &Stmt) -> Option<usize> {
+    match s {
+        Stmt::Assign { rhs, .. } => matches!(rhs, Expr::Num(_)).then_some(1),
+        Stmt::Block(stmts) => stmts.iter().try_fold(0, |n, x| reset_assigns(x).map(|k| n + k)),
+        Stmt::If { then, els, .. } => {
+            let a = reset_assigns(then)?;
+            let b = match els {
+                Some(e) => reset_assigns(e)?,
+                None => 0,
+            };
+            Some(a + b)
+        }
+        _ => Some(0),
+    }
+}
+
 /// `(name, active)` of the reset tested first in a clocked block: `if (rst)`, `if (!rst)`, `if (rst == 0)`, ...
 fn reset_condition(body: &Stmt) -> Option<(String, String)> {
     let mut s = body;
@@ -259,7 +278,11 @@ fn reset_condition(body: &Stmt) -> Option<(String, String)> {
             None => break,
         }
     }
-    let Stmt::If { cond, .. } = s else { return None };
+    let Stmt::If { cond, then, .. } = s else { return None };
+    // a reset sets registers to constants: an enable that writes data (`if (we) { mem[a] <= d; }`) is not one
+    if !reset_assigns(then).is_some_and(|k| k > 0) {
+        return None;
+    }
     let (mut c, mut low) = (cond, false);
     while let Expr::Unary(op, arg) = c {
         if op != "!" && op != "~" {
@@ -403,6 +426,7 @@ fn check_module(
     m: &Module,
     handshakes: &[(String, Dir, String)],
     summaries: &HashMap<String, Summary>,
+    declared_reset: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> Result<Summary> {
     let items = flatten_items(&m.items);
@@ -513,7 +537,7 @@ fn check_module(
                 // a synchronous reset: the first test of the block
                 if edges.len() == 1 {
                     if let Some((name, active)) = reset_condition(body) {
-                        if ck.signals.contains(&name) && name != clk {
+                        if declared_reset == Some(name.as_str()) && ck.signals.contains(&name) && name != clk {
                             uses.entry(name).or_default().entry(("sync".into(), active)).or_insert_with(|| here(it.pos));
                         }
                     }

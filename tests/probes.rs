@@ -1,6 +1,15 @@
 //! Debug probes: a module per probe and a top module that binds it into every instance of its target.
 
 const SRC: &str = "module Pe(input clk, input rst, input logic [1:0] mode, input logic [7:0] din, output logic [7:0] acc) {
+  clock clk;
+  reset rst;
+
+  clock clk;
+  reset rst;
+
+  clock clk;
+  reset rst;
+
   always_ff @(posedge clk) { if (rst) { acc <= 0; } else if (mode == 2) { acc <= (acc + din).wrap(); } }
 }
 module Top(input clk, input rst, input logic [1:0] mode, input logic [7:0] din, output logic [7:0] a0) {
@@ -30,5 +39,5 @@ fn probe_needs_a_clock() {
     let src = "module M(input logic a, output logic y) { assign y = a; }
 probe p on M when (a) { print(\"a=%0d\", a); }";
     let e = ovc::compile_full(src, "m.ov").unwrap_err();
-    assert!(e.message.contains("has no clock input"), "{}", e.message);
+    assert!(e.message.contains("has no clock to sample on"), "{}", e.message);
 }

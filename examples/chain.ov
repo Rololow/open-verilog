@@ -4,6 +4,10 @@ pipeline AddChain<int N = 4>(
   input clk, input rst, input logic valid_in, input logic [7:0] d,
   output logic [7:0] y, output logic valid_out
 ) {
+  reset rst;
+
+  clock clk;
+
   logic [7:0] v [N+1];
   stage first { assign v[0] = d; }
   for i in 0..N {

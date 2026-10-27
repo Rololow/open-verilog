@@ -25,6 +25,7 @@ pub fn check(modules: &[Module], envs: &HashMap<String, Env>, wrapped: &Wrapped)
     for m in modules {
         let env = envs.get(&m.name);
         check_widths(m, env, &by_name, wrapped, &mut out);
+        check_signs(m, env, &mut out);
         check_latches(m, env, &mut out);
         check_drivers(m, &by_name, &mut out);
         check_connections(m, &by_name, &mut out);
@@ -345,6 +346,127 @@ fn check_widths(m: &Module, env: Option<&Env>, by_name: &HashMap<&str, &Module>,
                             warn(out, m, it.pos, format!("port '{p}' of '{}' is {pw} bits but is connected to '{}' ({ew} bits)", i.module, text(e)));
                         }
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether an expression is signed in SystemVerilog, when it can be told. A decimal literal is signed; a based one is not.
+fn signed_of(e: &Expr, env: &Env) -> Option<bool> {
+    match e {
+        Expr::Ident(name, _) => env.signal(name).map(|(dt, _)| dt.signed),
+        Expr::Num(t) => Some(!t.contains('\'')),
+        Expr::Call(f, args) => match (&**f, args.as_slice()) {
+            (Expr::Ident(n, _), [_]) if n == "$signed" => Some(true),
+            (Expr::Ident(n, _), [_]) if n == "$unsigned" => Some(false),
+            _ => None,
+        },
+        Expr::Binary(op, a, b, _) => match op.as_str() {
+            "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||" => Some(false),
+            "<<" | "<<<" | ">>" | ">>>" => signed_of(a, env),
+            _ => Some(signed_of(a, env)? && signed_of(b, env)?),
+        },
+        // a reduction is unsigned; `-x` and `~x` keep the sign of `x`
+        Expr::Unary(op, a) => match op.as_str() {
+            "!" | "&" | "|" | "^" => Some(false),
+            _ => signed_of(a, env),
+        },
+        Expr::Ternary(_, a, b) => Some(signed_of(a, env)? && signed_of(b, env)?),
+        Expr::Cast(_, a) => signed_of(a, env),
+        Expr::Index(..) | Expr::Slice(..) | Expr::Concat(_) | Expr::Repl(..) => Some(false),
+        _ => None,
+    }
+}
+
+/// The signals that a signed operand brings into an expression, with their widths (`$signed(a) * $signed(b)` gives
+/// `a` and `b`, not the product).
+fn signed_leaves(e: &Expr, env: &Env, out: &mut Vec<(String, u32)>) {
+    match e {
+        Expr::Ident(name, _) => {
+            if env.signal(name).is_some_and(|(dt, _)| dt.signed) {
+                out.extend(sized(e, env).map(|w| (name.clone(), w)));
+            }
+        }
+        Expr::Call(f, args) if matches!(&**f, Expr::Ident(n, _) if n == "$signed") => {
+            if let [a] = args.as_slice() {
+                match a {
+                    Expr::Ident(name, _) => out.extend(sized(a, env).map(|w| (name.clone(), w))),
+                    _ => signed_leaves(a, env, out),
+                }
+            }
+        }
+        Expr::Binary(op, a, b, _) if matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^") => {
+            signed_leaves(a, env, out);
+            signed_leaves(b, env, out);
+        }
+        Expr::Cast(_, a) | Expr::Unary(_, a) => signed_leaves(a, env, out),
+        _ => {}
+    }
+}
+
+/// A mixed operation: a signed operand and an unsigned one. SV makes the whole operation unsigned, so the signed
+/// operand is extended with zeros to the width of the operation, and the result is not the signed one.
+fn sign_expr(m: &Module, env: &Env, e: &Expr, pos: Pos, out: &mut Vec<String>) {
+    match e {
+        Expr::Binary(op, a, b, _) => {
+            let mixed_op = matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "==" | "!=" | "<" | "<=" | ">" | ">=");
+            // a decimal literal is signed and does no harm beside an unsigned value (`count + 1`)
+            let neutral = |x: &Expr| matches!(x, Expr::Num(t) if !t.contains('\''));
+            if mixed_op && !neutral(a) && !neutral(b) {
+                if let (Some(sa), Some(sb)) = (signed_of(a, env), signed_of(b, env)) {
+                    if sa != sb {
+                        let mut leaves = Vec::new();
+                        signed_leaves(if sa { a } else { b }, env, &mut leaves);
+                        if let Some((name, _)) = leaves.first() {
+                            warn(out, m, pos, format!("'{name}' is signed but this expression is unsigned in SV: '{}' mixes it with an unsigned value", text(e)));
+                        }
+                        let width = [width_of(a, env), width_of(b, env)].into_iter().flatten().map(|w| w.width).max();
+                        for (name, w) in &leaves {
+                            if let Some(width) = width.filter(|width| width > w) {
+                                warn(out, m, pos, format!("'{name}' is extended from {w} to {width} bits with zeros, not with its sign"));
+                            }
+                        }
+                    }
+                }
+            }
+            sign_expr(m, env, a, pos, out);
+            sign_expr(m, env, b, pos, out);
+        }
+        Expr::Unary(_, a) | Expr::Cast(_, a) => sign_expr(m, env, a, pos, out),
+        Expr::Ternary(c, a, b) => {
+            sign_expr(m, env, c, pos, out);
+            sign_expr(m, env, a, pos, out);
+            sign_expr(m, env, b, pos, out);
+        }
+        Expr::Call(_, args) => args.iter().for_each(|x| sign_expr(m, env, x, pos, out)),
+        Expr::Index(a, i) => {
+            sign_expr(m, env, a, pos, out);
+            sign_expr(m, env, i, pos, out);
+        }
+        Expr::Slice(a, ..) => sign_expr(m, env, a, pos, out),
+        Expr::Concat(parts) | Expr::Repl(_, parts) => parts.iter().for_each(|x| sign_expr(m, env, x, pos, out)),
+        _ => {}
+    }
+}
+
+/// The signedness of the operations: a signed operand mixed with an unsigned one (see `sign_expr`).
+fn check_signs(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
+    let Some(env) = env else { return };
+    for it in &m.items {
+        match &it.kind {
+            ItemKind::ContAssign { rhs, .. } => sign_expr(m, env, rhs, it.pos, out),
+            ItemKind::Decl(d) => {
+                for x in &d.decls {
+                    if let Some(init) = &x.init {
+                        sign_expr(m, env, init, it.pos, out);
+                    }
+                }
+            }
+            ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
+                for (_, rhs, _, pos) in assignments(body) {
+                    sign_expr(m, env, rhs, pos, out);
                 }
             }
             _ => {}

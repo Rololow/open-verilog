@@ -47,6 +47,8 @@ module M<config C = Cf>(input logic [1:0] i, output logic [2:0] y) {
 #[test]
 fn a_delay_of_a_delay_knows_its_width() {
     let src = "module M(input logic clk, input logic [7:0] a, output logic [7:0] y) {
+  clock clk;
+
   wire [7:0] m = a;
   val m1 = m.delay(1);
   val m2 = m1.delay(1);
@@ -62,6 +64,8 @@ fn a_delay_of_a_delay_knows_its_width() {
 #[test]
 fn a_delay_of_an_element_of_a_two_dimensional_array() {
     let src = "module M(input logic clk, input logic [7:0] p [3] [2], output logic [7:0] y [2]) {
+  clock clk;
+
   for j in 0..2 { assign y[j] = p[2][j].delay(j + 1); }
 }
 ";
