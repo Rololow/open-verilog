@@ -60,6 +60,8 @@ pub struct Parser {
     hoisted_enums: Vec<crate::ast::EnumDef>,
     /// `for (a, b) in list`: the bindings of the names, given to the body of the loop.
     unpack: Vec<(String, crate::ast::Expr)>,
+    /// The top-level functions defined so far, with the line of their definition: one definition per name.
+    fn_defs: Vec<(String, (usize, usize))>,
     /// The imports of the file: the package of each, and where it is written.
     imports: Vec<(String, (usize, usize))>,
 }
@@ -67,7 +69,7 @@ pub struct Parser {
 /// Parses a .ov file into its modules.
 pub fn parse_file(src: &str, file: &str) -> Result<File> {
     let toks = lex(src, file)?;
-    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new() };
+    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new() };
     let mut out = File::default();
     p.top_items(&mut out, None)?;
     out.enums.append(&mut p.hoisted_enums);
@@ -78,7 +80,7 @@ pub fn parse_file(src: &str, file: &str) -> Result<File> {
 /// A type on the command line, such as the top module with its arguments: `DarkRiscv<DarkCfg with { csr = true }>`.
 pub fn parse_top(src: &str, file: &str) -> Result<crate::ast::DType> {
     let toks = lex(src, file)?;
-    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new() };
+    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new() };
     let dt = p.parse_dtype(false)?;
     if p.tok().kind != Kind::Eof {
         return Err(p.fail(format!("unexpected '{}' after the top module", p.tok().text)));

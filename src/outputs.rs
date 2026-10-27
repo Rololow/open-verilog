@@ -124,8 +124,7 @@ pub fn record_c_header(records: &[Record]) -> String {
         ]);
         out.push(String::new());
     }
-    out.join("
-")
+    out.join("\n")
 }
 
 /// A Python module with one class per struct: `pack`, `unpack` and `words`, with the layout of the C struct.
@@ -188,9 +187,7 @@ pub fn record_python_module(records: &[Record]) -> String {
             format!("    OFFSETS = {{{}}}", offsets.join(", ")),
         ]);
     }
-    out.join("
-") + "
-"
+    out.join("\n") + "\n"
 }
 
 /// The documentation of the exported structs: one table each.
@@ -204,8 +201,7 @@ pub fn record_markdown(records: &[Record]) -> String {
         }
         out.push(String::new());
     }
-    out.join("
-")
+    out.join("\n")
 }
 
 /// `(map name, description, devices)` of each memory map.

@@ -49,6 +49,7 @@ pub fn build(def: &IsaDef, env: &Env, file: &str) -> Result<IsaInfo> {
     if !(1..=16).contains(&opcode_bits) {
         return Err(fail(format!("the opcode of isa '{}' takes 1 to 16 bits", def.name)));
     }
+    let max_len = def.max.as_ref().map(|m| value(m, "the maximum length")).transpose()?;
     let mut formats: Vec<FormatInfo> = Vec::new();
     let mut lengths = vec![opcode_bits; 1usize << opcode_bits];
     let mut codes: HashMap<i64, String> = HashMap::new();
@@ -56,7 +57,7 @@ pub fn build(def: &IsaDef, env: &Env, file: &str) -> Result<IsaInfo> {
     for f in &def.formats {
         let code = value(&f.code, &format!("the code of format '{}'", f.name))?;
         if !(0..(1i64 << opcode_bits)).contains(&code) {
-            return Err(Error::new(format!("the code {code} of '{}' does not fit in {opcode_bits} bits", f.name), file, f.pos.0, f.pos.1));
+            return Err(Error::new(format!("the opcode {code} of '{}' does not fit in {opcode_bits} bits", f.name), file, f.pos.0, f.pos.1));
         }
         if let Some(other) = codes.insert(code, f.name.clone()) {
             return Err(Error::new(format!("'{}' and '{other}' have the same opcode {code}", f.name), file, f.pos.0, f.pos.1));
@@ -65,13 +66,19 @@ pub fn build(def: &IsaDef, env: &Env, file: &str) -> Result<IsaInfo> {
         let mut layout = Vec::new();
         match &f.like {
             Some(base) => {
-                let base_fields = formats.iter().find(|x| &x.name == base).ok_or_else(|| Error::new(format!("'{base}' is not a format defined before '{}'", f.name), file, f.pos.0, f.pos.1))?;
+                let base_fields = formats.iter().find(|x| &x.name == base).ok_or_else(|| Error::new(format!("'{}' is like '{base}', which is not declared", f.name), file, f.pos.0, f.pos.1))?;
                 layout = base_fields.fields.clone();
             }
             None => {
                 let mut next = opcode_bits;
                 for field in &f.fields {
+                    if layout.iter().any(|l: &FieldLayout| l.name == field.name) {
+                        return Err(Error::new(format!("field '{}' declared twice in '{}'", field.name, f.name), file, f.pos.0, f.pos.1));
+                    }
                     let width = value(&field.width, &format!("the width of '{}'", field.name))?;
+                    if width == 0 {
+                        return Err(Error::new(format!("field '{}' of '{}' has no bits", field.name, f.name), file, f.pos.0, f.pos.1));
+                    }
                     let count = match &field.count {
                         Some(c) => Some(value(c, &format!("the count of '{}'", field.name))?),
                         None => None,
@@ -84,6 +91,11 @@ pub fn build(def: &IsaDef, env: &Env, file: &str) -> Result<IsaInfo> {
         let end = layout.iter().map(|l| l.start + l.width * l.count.unwrap_or(1)).max().unwrap_or(0);
         lengths[code as usize] = end.max(opcode_bits);
         let length = end.max(opcode_bits);
+        if let Some(max) = max_len {
+            if length > max {
+                return Err(Error::new(format!("'{}' is {length} bits long, more than the maximum {max}", f.name), file, f.pos.0, f.pos.1));
+            }
+        }
         formats.push(FormatInfo { name: f.name.clone(), code, desc: f.desc.clone(), length, fields: layout });
         names.insert(f.name.clone(), code);
     }

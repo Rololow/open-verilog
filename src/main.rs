@@ -204,8 +204,7 @@ fn run(args: Args) -> Result<(), String> {
         if text.is_empty() {
             return Err("ovc: --emit-c: no regmap, exported struct or memmap".into());
         }
-        std::fs::write(path, text.join("
-")).map_err(|e| format!("ovc: {path}: {e}"))?;
+        std::fs::write(path, text.join("\n")).map_err(|e| format!("ovc: {path}: {e}"))?;
     }
     if let Some(path) = &args.emit_isa_sv {
         if compiled.isas.is_empty() {
@@ -242,8 +241,7 @@ fn run(args: Args) -> Result<(), String> {
         if text.is_empty() {
             return Err("ovc: --emit-doc: no regmap, isa, exported struct or memmap".into());
         }
-        std::fs::write(path, text.join("
-")).map_err(|e| format!("ovc: {path}: {e}"))?;
+        std::fs::write(path, text.join("\n")).map_err(|e| format!("ovc: {path}: {e}"))?;
     }
     if args.build {
         return write_project(&args, &compiled);

@@ -282,7 +282,15 @@ impl Emitter {
                 self.ind -= 1;
                 self.line("endcase");
             }
-            Stmt::ExprStmt(e) => self.line(&format!("{};", expr(e, -1, false)?)),
+            Stmt::ExprStmt(e) => {
+                self.line(&format!("{};", expr(e, -1, false)?));
+                // a failed check of the design fails the tests too (the testbench counts `ovc_check_failed`)
+                if matches!(e, Expr::Call(f, _) if matches!(&**f, Expr::Ident(name, _) if name == "$error")) {
+                    self.line("`ifdef OVC_TESTS");
+                    self.line("->ovc_tests.ovc_check_failed;");
+                    self.line("`endif");
+                }
+            }
             Stmt::Decl(d) => self.decl(d)?,
             Stmt::Return(_) | Stmt::Goto(_) | Stmt::Val(..) => {
                 return Err(Error::new("this statement is not supported in SystemVerilog output yet", "", 0, 0));

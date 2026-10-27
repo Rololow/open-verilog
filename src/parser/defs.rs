@@ -7,6 +7,19 @@ use crate::error::Result;
 use crate::lexer::Kind;
 
 impl Parser {
+    /// A top-level function has one definition in the file: a second one is an error at it, with the first one's line.
+    fn define_fns(&mut self, items: &[ItemKind], at: (usize, usize)) -> Result<()> {
+        for item in items {
+            let ItemKind::Fn { name, .. } = item else { continue };
+            if let Some((_, first)) = self.fn_defs.iter().find(|(n, _)| n == name) {
+                let msg = format!("'{name}' is already defined at {}:{}", self.file, first.0);
+                return Err(crate::error::Error::new(msg, &self.file, at.0, at.1));
+            }
+            self.fn_defs.push((name.clone(), at));
+        }
+        Ok(())
+    }
+
     /// Top-level items up to `closer` (`endpackage`), or to the end of the file when there is none.
     pub(super) fn top_items(&mut self, out: &mut File, closer: Option<&str>) -> Result<()> {
         loop {
@@ -54,9 +67,15 @@ impl Parser {
                 self.expect(";")?;
                 out.values.push((name, expr));
             } else if self.at("fn") {
-                out.fns.extend(self.parse_item_kind()?);
+                let at = (self.tok().line, self.tok().col);
+                let items = self.parse_item_kind()?;
+                self.define_fns(&items, at)?;
+                out.fns.extend(items);
             } else if self.at("function") {
-                out.fns.push(self.parse_function_def()?);
+                let at = (self.tok().line, self.tok().col);
+                let item = self.parse_function_def()?;
+                self.define_fns(std::slice::from_ref(&item), at)?;
+                out.fns.push(item);
             } else if self.at("struct") {
                 out.structs.push(self.parse_struct_def()?);
             } else if self.at("export") {

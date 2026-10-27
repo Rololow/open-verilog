@@ -22,6 +22,31 @@ fn boxed(e: Expr) -> Box<Expr> {
     Box::new(e)
 }
 
+/// The width and the value of a sized literal (`8'hA5`). An unsized literal has no width, so it is not one.
+fn sized_literal(e: &Expr) -> Option<(i64, i64)> {
+    let Expr::Num(text) = e else { return None };
+    let (width, rest) = text.split_once('\'')?;
+    let width: i64 = width.parse().ok()?;
+    let value = crate::lexer::number_value(&format!("'{rest}"))?;
+    (0..(1i64 << width.min(62))).contains(&value).then_some((width, value))
+}
+
+/// An expression whose bits can only be selected by shifting it: SV does not select from an expression.
+pub(crate) fn is_expression(e: &Expr) -> bool {
+    sized_literal(e).is_some()
+        || (matches!(e, Expr::Binary(..) | Expr::Ternary(..) | Expr::Unary(..) | Expr::Concat(_) | Expr::Call(..) | Expr::Cast(..))
+            && !has_list(e))
+}
+
+/// `base[start +: count]` of an expression: the expression is shifted down at its own width (so a carry is kept), then
+/// cut to `count` bits.
+fn part_of_expression(base: &Expr, start: Expr, count: i64, env: &Env) -> Expr {
+    let w = super::width::width_of(base, env).map_or(32, |w| i64::from(w.width));
+    let wide = Expr::Cast(boxed(num(w)), boxed(base.clone()));
+    let shifted = Expr::Binary(">>".into(), boxed(wide), boxed(start), (0, 0));
+    Expr::Cast(boxed(num(count)), boxed(shifted))
+}
+
 pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
     match e {
         Expr::Num(_) | Expr::OpRef(_) | Expr::Type(_) => e.clone(),
@@ -180,6 +205,10 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                     return fold_expr(&acc, env);
                 }
             }
+            // a bit of a sized literal: a literal of one bit
+            if let (Some(i), Some((_, v))) = (int_of(&idx), sized_literal(&base)) {
+                return Expr::Num(format!("1'h{}", (v >> i) & 1));
+            }
             if let Some(i) = int_of(&idx) {
                 match &base {
                     // a bit of a part: the bit of the inner vector
@@ -189,14 +218,13 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                         }
                     }
                     // a bit of an expression: the expression shifted down, then one bit
-                    Expr::Binary(..) | Expr::Ternary(..) | Expr::Unary(..) | Expr::Concat(_) | Expr::Call(..) | Expr::Cast(..) if !has_list(&base) => {
-                        let w = super::width::width_of(&base, env).map_or(32, |w| i64::from(w.width));
-                        let wide = Expr::Cast(boxed(num(w)), boxed(base.clone()));
-                        let shifted = Expr::Binary(">>".into(), boxed(wide), boxed(num(i)), (0, 0));
-                        return Expr::Cast(boxed(num(1)), boxed(shifted));
-                    }
+                    _ if is_expression(&base) => return part_of_expression(&base, num(i), 1, env),
                     _ => {}
                 }
+            }
+            // a bit of an expression at a signal position: SV cannot select from an expression, so it is shifted too
+            if is_expression(&base) {
+                return part_of_expression(&base, idx, 1, env);
             }
             Expr::Index(boxed(base), boxed(idx))
         }
@@ -208,6 +236,10 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                     if let Some(v) = int_of(&base).filter(|_| m >= l && m - l < 62) {
                         return num((v >> l) & ((1i64 << (m - l + 1)) - 1));
                     }
+                    // a part of a sized literal: a literal of the part's width
+                    if let (Some((_, v)), true) = (sized_literal(&base), m >= l && m - l < 62) {
+                        return Expr::Num(format!("{}'h{:x}", m - l + 1, (v >> l) & ((1i64 << (m - l + 1)) - 1)));
+                    }
                     match &base {
                         // a part of a part: the bits of the inner vector
                         Expr::Slice(inner, _, ilsb, iop) if iop.as_str() == ":" => {
@@ -216,14 +248,15 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                             }
                         }
                         // a part of an expression: the expression shifted down, then cut to size
-                        Expr::Binary(..) | Expr::Ternary(..) | Expr::Unary(..) | Expr::Concat(_) | Expr::Call(..) | Expr::Cast(..) if m >= l && !has_list(&base) => {
-                            let w = super::width::width_of(&base, env).map_or(32, |w| i64::from(w.width));
-                            let wide = Expr::Cast(boxed(num(w)), boxed(base.clone()));
-                            let shifted = Expr::Binary(">>".into(), boxed(wide), boxed(num(l)), (0, 0));
-                            return Expr::Cast(boxed(num(m - l + 1)), boxed(shifted));
-                        }
+                        _ if m >= l && is_expression(&base) => return part_of_expression(&base, num(l), m - l + 1, env),
                         _ => {}
                     }
+                }
+            }
+            // `v[start +: count]` of an expression: the same, from a start that may be a signal
+            if op.as_str() == "+:" && is_expression(&base) {
+                if let Some(count) = int_of(&lsb) {
+                    return part_of_expression(&base, msb, count, env);
                 }
             }
             Expr::Slice(boxed(base), boxed(msb), boxed(lsb), op.clone())

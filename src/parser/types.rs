@@ -32,7 +32,11 @@ impl Parser {
         let t = self.tok().clone();
         let named = t.kind == Kind::Ident
             && t.text != "signed"
-            && (BASE_TYPES.contains(&t.text.as_str()) || self.peek(1).kind == Kind::Ident || self.peek(1).text == "<" || (self.peek(1).text == "[" && self.typed_packed_decl()));
+            && (BASE_TYPES.contains(&t.text.as_str())
+                || self.peek(1).kind == Kind::Ident
+                || self.peek(1).kind == Kind::Eof // a bare module name on the command line: `--top Top`
+                || self.peek(1).text == "<"
+                || (self.peek(1).text == "[" && self.typed_packed_decl()));
         if named {
             dt.name = self.ident()?;
             if self.accept("<") {

@@ -344,7 +344,7 @@ pub fn expand_conns(target: Option<&crate::ast::Module>, spec: Option<&crate::as
 }
 
 /// The generated valid/ready checks of a handshake port: its valid must stay high, with stable data, until ready.
-pub fn handshake_checks(module: &str, port: &str, role: Dir, fields: &[String], asserts: bool) -> Vec<String> {
+pub fn handshake_checks(module: &str, port: &str, shown: &str, role: Dir, fields: &[String], asserts: bool) -> Vec<String> {
     let has = |n: &str| fields.iter().any(|f| f == n);
     if !asserts || !(has("valid") && has("ready")) {
         return Vec::new();
@@ -356,7 +356,7 @@ pub fn handshake_checks(module: &str, port: &str, role: Dir, fields: &[String], 
         _ => "it withdrew or changed it",
     };
     let held_msg = format!(
-        "{module}: {port} offered a value and {who} before it was accepted (valid must stay high, with stable data, until ready)"
+        "{module}: {shown} offered a value and {who} before it was accepted (valid must stay high, with stable data, until ready)"
     );
     // each directive starts its own line: the lint reads them as the preprocessor does
     let failed = |msg: String| {
@@ -376,7 +376,7 @@ pub fn handshake_checks(module: &str, port: &str, role: Dir, fields: &[String], 
     ];
     out.extend(failed(held_msg));
     out.push(format!("ov_hs_{port}_known: assert property (@(posedge clk) disable iff (rst) !$isunknown({port}_valid))"));
-    out.extend(failed(format!("{module}: {port} valid is X")));
+    out.extend(failed(format!("{module}: {shown} valid is X")));
     out.push("`endif".to_string());
     out
 }

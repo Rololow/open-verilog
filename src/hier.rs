@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use crate::ast::{Conn, Decl, Declarator, DType, Dir, Expr, Item, ItemKind, Module, Pos, Port};
+use crate::ast::{Conn, Decl, Declarator, DType, Dir, Expr, Item, ItemKind, Module, Pos, Port, Stmt};
 use crate::elab::int_of;
 use crate::error::{Error, Result};
 use crate::pipeline::arrays::rewrite_item;
@@ -97,6 +97,20 @@ struct Threader<'a> {
 }
 
 /// A call of a method of an instance: `inst.method(args)`.
+/// The first hierarchical target written by a statement (`inst.sub.sig <= x`): its signal's name and position.
+fn hier_write(s: &Stmt, is_hier: &dyn Fn(&[Seg]) -> bool) -> Option<(String, Pos)> {
+    match s {
+        Stmt::Assign { lhs, pos, .. } => flatten(lhs)
+            .filter(|segs| is_hier(segs))
+            .and_then(|segs| segs.last().map(|leaf| (leaf.name.clone(), *pos))),
+        Stmt::Block(stmts) => stmts.iter().find_map(|x| hier_write(x, is_hier)),
+        Stmt::If { then, els, .. } => hier_write(then, is_hier).or_else(|| els.as_deref().and_then(|e| hier_write(e, is_hier))),
+        Stmt::For { body, .. } => hier_write(body, is_hier),
+        Stmt::Case { arms, .. } => arms.iter().find_map(|(_, body)| hier_write(body, is_hier)),
+        _ => None,
+    }
+}
+
 fn method_call(e: &Expr, names: &HashMap<String, usize>) -> Option<(String, String, Pos, Vec<Expr>)> {
     let Expr::Call(f, args) = e else { return None };
     let Expr::Member(base, method, at) = &**f else { return None };
@@ -113,7 +127,10 @@ impl Threader<'_> {
     fn instance(&self, ms: &[Module], m: usize, seg: &Seg) -> Result<(usize, usize)> {
         let name = seg.ident();
         let Some(&at) = instances(&ms[m].items).get(&name) else {
-            return Err(self.err(seg.pos, format!("module '{}' has no instance '{name}'", ms[m].name)));
+            let mut known: Vec<String> = instances(&ms[m].items).into_keys().collect();
+            known.sort();
+            let hint = if known.is_empty() { String::new() } else { format!(" (instances: {})", known.join(", ")) };
+            return Err(self.err(seg.pos, format!("module '{}' has no instance '{name}'{hint}", ms[m].name)));
         };
         let ItemKind::Instance(inst) = &ms[m].items[at].kind else { unreachable!() };
         let Some(&child) = self.index.get(&inst.module) else {
@@ -136,14 +153,18 @@ impl Threader<'_> {
                 }
             }
         }
+        if instances(&ms[m].items).contains_key(name) {
+            return Err(self.err(pos, format!("'{name}' is an instance of '{}', not a signal", ms[m].name)));
+        }
         Err(self.err(pos, format!("module '{}' has no signal '{name}'", ms[m].name)))
     }
 
     /// Connects port `port` of the instance at item `at` of module `m` to `expr`.
     fn connect(&self, ms: &mut [Module], m: usize, at: usize, port: &str, expr: Expr, pos: Pos) -> Result<()> {
+        let module = ms[m].name.clone();
         let ItemKind::Instance(inst) = &mut ms[m].items[at].kind else { unreachable!() };
         if inst.conns.iter().any(|c| c.port.as_deref() == Some(port) && c.expr.is_some()) {
-            return Err(self.err(pos, format!("port '{port}' of instance '{}' is already connected", inst.name)));
+            return Err(self.err(pos, format!("port '{port}' of instance '{}' in '{module}' is already connected", inst.name)));
         }
         inst.conns.retain(|c| c.port.as_deref() != Some(port));
         inst.conns.push(Conn { port: Some(port.to_string()), expr: Some(expr) });
@@ -404,6 +425,12 @@ impl Threader<'_> {
                     let rhs = map_expr(rhs, &mut |e| Ok(rewrite_one(e))).unwrap_or_else(|_| rhs.clone());
                     drives.push((segs, rhs, it.pos));
                     continue;
+                }
+            }
+            // only an `assign` drives a port of an instance: a process cannot
+            if let ItemKind::Always { body, .. } | ItemKind::AlwaysComb(body) | ItemKind::Initial(body) = &it.kind {
+                if let Some((name, pos)) = hier_write(body, &is_hier) {
+                    return Err(self.err(pos, format!("'{name}' is driven inside a process: an instance's input is driven by an assign")));
                 }
             }
             let rewritten = rewrite_item(&it, &|e| Ok(rewrite_one(e))).map_err(|(at, msg)| self.err(if at.0 == 0 { it.pos } else { at }, msg))?;

@@ -15,11 +15,13 @@ pub mod isa;
 
 
 use crate::pipeline;
+use crate::pipeline::arrays::rewrite_item;
 
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{Arg, Conn, Decl, Declarator, DType, Dir, EnumDef, Expr, File, ForHeader, Instance, Item, ItemKind, Module, Param, Pos, Port, Sens, Stmt, StructDef};
 use std::rc::Rc;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use env::{BundleRef, EnumInfo, FnDef, ResetSpec, StructInfo};
 use crate::error::{Error, Result};
@@ -332,6 +334,22 @@ fn handshake_refs(base: &str, refs: &[(String, BundleRef)]) -> Vec<(String, Dir,
                 None => key.clone(),
             };
             (key.clone(), b.role, shown)
+        })
+        .collect()
+}
+
+/// The handshake channels of a port's references, with their names: each channel of a nested bundle too (`m_ar`, shown
+/// as `m.ar`), so that its valid and ready get the checks of their own.
+fn handshake_channels(base: &str, refs: &[(String, BundleRef)]) -> Vec<(String, BundleRef, String)> {
+    refs.iter()
+        .filter(|(_, b)| b.fields.iter().any(|(f, _)| f == "valid") && b.fields.iter().any(|(f, _)| f == "ready"))
+        .filter(|(_, b)| b.role != Dir::Monitor)
+        .map(|(key, b)| {
+            let shown = match key.strip_prefix(base).and_then(|rest| rest.strip_prefix('_')) {
+                Some(path) => format!("{base}.{}", path.replace('_', ".")),
+                None => key.clone(),
+            };
+            (key.clone(), b.clone(), shown)
         })
         .collect()
 }
@@ -676,8 +694,8 @@ impl<'a> Design<'a> {
 
     /// The monitors of a bundle port: an instance of each, on the clock and reset and the port.
     fn monitor_items(&self, def: &crate::ast::BundleDef, p: &Port, env: &Env, ctx: &Ctx) -> Result<Vec<Item>> {
-        // a monitor watches the slave ports of its bundle
-        if p.dir != Dir::Slave {
+        // a monitor watches the slave ports of its bundle; they are checks, so `--no-asserts` leaves them out
+        if p.dir != Dir::Slave || !self.asserts {
             return Ok(Vec::new());
         }
         let mut out = Vec::new();
@@ -752,6 +770,7 @@ impl<'a> Design<'a> {
         let mut bundle_of: HashMap<String, BundleRef> = HashMap::new();
         // the handshake ports of the module: name, role, and how it is shown in the messages (`p.s` for `p_s`)
         let mut handshakes: Vec<(String, Dir, String)> = Vec::new();
+        let mut channels: Vec<(String, BundleRef, String)> = Vec::new();
         let mut monitor_items: Vec<Item> = Vec::new();
         let mut struct_of: HashMap<String, String> = HashMap::new();
         for p in &m.ports {
@@ -761,6 +780,7 @@ impl<'a> Design<'a> {
                     let element = Port { name: format!("{}_{k}", p.name), dtype: elem.clone(), ..p.clone() };
                     let (expanded, refs, structs) = bundle::expand_port(&def, &element, &env, self.file)?;
                     handshakes.extend(handshake_refs(&element.name, &refs));
+                    channels.extend(handshake_channels(&element.name, &refs));
                     bundle_of.extend(refs);
                     struct_of.extend(structs);
                     ports.extend(expanded);
@@ -771,6 +791,7 @@ impl<'a> Design<'a> {
             if let Some(def) = self.globals.bundle_def(&p.dtype.name).cloned() {
                 let (expanded, refs, structs) = bundle::expand_port(&def, p, &env, self.file)?;
                 handshakes.extend(handshake_refs(&p.name, &refs));
+                channels.extend(handshake_channels(&p.name, &refs));
                 bundle_of.extend(refs);
                 struct_of.extend(structs);
                 ports.extend(expanded);
@@ -917,6 +938,9 @@ impl<'a> Design<'a> {
         // without a `reset` declaration, the module's reset is the port the implicit clock and reset use
         let reset = reset.or_else(|| default_reset(&ports));
         env.set_reset(reset, reg_inits);
+        if let Some(msg) = select_past_width(&m.items, &env).or_else(|| view_width_error(&m.items, &env)) {
+            return Err(ctx.err(msg));
+        }
         let mut items = Vec::new();
         self.elab_items(&m.items, &env, &ctx, &[], &mut items)?;
         self.elab_items(&monitor_items, &env, &ctx, &[], &mut items)?;
@@ -955,11 +979,18 @@ impl<'a> Design<'a> {
             .collect();
         // the rule of the clock-domain check: a producer's valid must not depend on its ready (see `domains`)
         self.handshakes.insert(name.to_string(), handshakes);
-        let checks: Vec<String> = bundle_ports
+        // a bundle port checks its own valid and ready; its nested channels (`m.ar`) check theirs
+        let mut checked: Vec<(String, BundleRef, String)> = bundle_ports.into_iter().map(|(port, b)| (port.clone(), b, port)).collect();
+        for (key, b, shown) in channels {
+            if !checked.iter().any(|(k, _, _)| *k == key) {
+                checked.push((key, b, shown));
+            }
+        }
+        let checks: Vec<String> = checked
             .into_iter()
-            .flat_map(|(port, b)| {
+            .flat_map(|(port, b, shown)| {
                 let fields: Vec<String> = b.fields.iter().map(|(f, _)| f.clone()).collect();
-                bundle::handshake_checks(&m.name, &port, b.role, &fields, self.asserts)
+                bundle::handshake_checks(&m.name, &port, &shown, b.role, &fields, self.asserts)
             })
             .collect();
         if !checks.is_empty() {
@@ -1781,6 +1812,15 @@ fn member_error(module: &Module, env: &Env) -> Option<(String, Pos)> {
                 let hint = suggest(field, b.fields.iter().map(|(f, _)| f.clone()));
                 *found.borrow_mut() = Some((format!("bundle '{}' has no field '{field}'{hint}", b.bundle), *pos));
             }
+        } else if let Some((_, isa, format)) = env.view(name) {
+            // a view of an instruction: `opcode`, or a field of its format
+            if let Some(info) = env.isa_info(&isa) {
+                let fields: Vec<String> = info.formats.iter().find(|f| f.name == format).map(|f| f.fields.iter().map(|x| x.name.clone()).collect()).unwrap_or_default();
+                if field != "opcode" && !fields.contains(field) {
+                    let hint = suggest(field, fields.clone());
+                    *found.borrow_mut() = Some((format!("format '{format}' has no field '{field}'{hint}"), *pos));
+                }
+            }
         }
         false
     };
@@ -1854,7 +1894,70 @@ fn unknown_identifier(module: &Module) -> Option<(String, Pos)> {
             _ => {}
         }
     }
-    used.into_iter().find(|(name, _)| !name.starts_with('$') && !known.contains(name))
+    // the instances of a loop are `m_0`, `m_1`, ...: the family `m` is a name too (`m[1].leaf` reaches into one)
+    let family = |name: &str| module.items.iter().any(|item| matches!(&item.kind, ItemKind::Instance(i) if i.name.starts_with(&format!("{name}_"))));
+    used.into_iter().find(|(name, _)| !name.starts_with('$') && !known.contains(name) && !family(name))
+}
+
+/// Visits every expression of an item: its statements and declarations, and the value of a module-level `val`.
+fn visit_item(it: &Item, visit: &dyn Fn(&Expr) -> std::result::Result<Option<Expr>, crate::pipeline::rewrite::Failure>) {
+    let _ = rewrite_item(it, visit);
+    if let ItemKind::Val { expr, .. } = &it.kind {
+        let mut f = |e: &Expr| visit(e);
+        let _ = crate::pipeline::rewrite::map_expr(expr, &mut f);
+    }
+}
+
+/// A part-select past the width of an expression (`(a + b)[9:4]` of a 9-bit sum): SV would take the missing bits as
+/// nothing, so it is an error. The first one, as a message.
+fn select_past_width(items: &[Item], env: &Env) -> Option<String> {
+    let found: RefCell<Option<String>> = RefCell::new(None);
+    for it in items {
+        visit_item(it, &|e| {
+            if let Expr::Slice(base, msb, lsb, op) = e {
+                if op.as_str() == ":" && fold::is_expression(&**base) && found.borrow().is_none() {
+                    if let (Some(m), Some(l), Some(w)) = (int_of(&fold_expr(&**msb, env)), int_of(&fold_expr(&**lsb, env)), width::width_of(&**base, env)) {
+                        if m >= i64::from(w.width) {
+                            *found.borrow_mut() = Some(format!("bits [{m}:{l}] are out of range for this {}-bit value", w.width));
+                        }
+                    }
+                }
+            }
+            Ok(None)
+        });
+    }
+    found.into_inner()
+}
+
+/// A value viewed as a struct (`a.as(S)`) of another width than the struct: the view would read bits that are not there.
+fn view_width_error(items: &[Item], env: &Env) -> Option<String> {
+    let found: RefCell<Option<String>> = RefCell::new(None);
+    for it in items {
+        visit_item(it, &|e| {
+            if let Expr::Call(f, args) = e {
+                if let Expr::Member(base, method, _) = &**f {
+                    if method == "as" && found.borrow().is_none() {
+                        let key = match args.as_slice() {
+                            [Expr::Ident(name, _)] => Some(name.clone()),
+                            [Expr::Type(dt)] => fold::struct_key(dt, env),
+                            _ => None,
+                        };
+                        if let (Some(s), Some(w)) = (key.as_ref().and_then(|k| env.struct_info(k)), width::width_of(&**base, env)) {
+                            if i64::from(w.width) != i64::from(s.width) {
+                                let name = key.unwrap_or_default();
+                                *found.borrow_mut() = Some(format!(
+                                    "a view as struct '{name}' needs the struct's width: it is {} bits but the struct is {} bits",
+                                    w.width, s.width
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(None)
+        });
+    }
+    found.into_inner()
 }
 
 /// The names a statement declares: its local declarations and the variables of its loops.
