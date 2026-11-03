@@ -178,7 +178,7 @@ fn filelist_inputs(list: &str) -> Result<Vec<String>, String> {
             continue;
         }
         if line.starts_with('+') {
-            return Err(format!("ovc: {list}: '{line}' is not supported by ovc build (the sources are not preprocessed)"));
+            return Err(format!("ovc: {list}: '{line}' is not supported by ovc build (the sources are not preprocessed): `ovc lint -f {list}` checks the .sv files with their include directories"));
         }
         out.push(line.to_string());
     }

@@ -348,7 +348,7 @@ impl Preprocessor {
             }
             let (params, body) = match self.macros.get(&name) {
                 Some(m) => m.clone(),
-                None => return Err(Error::new(format!("macro `{name} is not defined"), file, lineno, i + 1)),
+                None => return Err(Error::new(format!("unknown macro `{name}"), file, lineno, i + 1)),
             };
             let mut body = body;
             if !params.is_empty() {

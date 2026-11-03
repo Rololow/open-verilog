@@ -1,11 +1,12 @@
 //! The checks of `ovc lint` on the elaborated modules (the Python lint checks of the same names): widths, latches,
-//! drivers, instance connections and assignment style. They are warnings, and they run only in the lint: a design that
-//! is compiled is not checked this way.
+//! drivers, instance connections and assignment style. They are warnings, and they run only in the lint, except the
+//! undriven outputs, which the compiler refuses (`undriven_outputs`).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::ast::{Dir, DType, Expr, File, Item, ItemKind, Module, Pos, Stmt};
+use crate::error::Error;
 use crate::domains::reads_of;
 use crate::elab::fold::int_of;
 use crate::elab::width::{width_of, Width};
@@ -26,12 +27,32 @@ pub fn check(modules: &[Module], envs: &HashMap<String, Env>, wrapped: &Wrapped)
         let env = envs.get(&m.name);
         check_widths(m, env, &by_name, wrapped, &mut out);
         check_signs(m, env, &mut out);
+        check_sizes(m, env, &mut out);
         check_latches(m, env, &mut out);
-        check_drivers(m, &by_name, &mut out);
+        let mut undriven = Vec::new();
+        check_drivers(m, &by_name, &mut out, &mut undriven);
+        for e in undriven {
+            let text = format!("{}:{}:{}: warning: {}", e.file, e.line, e.col, e.message);
+            if !out.contains(&text) {
+                out.push(text);
+            }
+        }
         check_connections(m, &by_name, &mut out);
         check_process_style(m, &mut out);
     }
     out
+}
+
+/// The output ports that nothing drives, in every module of the design: an undriven output is an error of the compiler
+/// (its value is X in simulation, and the synthesis tools drop it).
+pub fn undriven_outputs(modules: &[Module]) -> Vec<Error> {
+    let flat: Vec<Module> = modules.iter().map(|m| Module { items: flatten(&m.items), ..m.clone() }).collect();
+    let by_name: HashMap<&str, &Module> = flat.iter().map(|m| (m.name.as_str(), m)).collect();
+    let mut errors = Vec::new();
+    for m in &flat {
+        check_drivers(m, &by_name, &mut Vec::new(), &mut errors);
+    }
+    errors
 }
 
 /// The truncations written on purpose in the source, by module (without its specialisation).
@@ -474,6 +495,65 @@ fn check_signs(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
     }
 }
 
+/// A shift of a sum or a product: SV evaluates the sum at the widest of the target and the operands, so the bits above
+/// that width are gone before the shift (`y = (a * b) >> 8` on 8 bits). A signed operand is not checked here (`sign`).
+fn check_sizes(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
+    let Some(env) = env else { return };
+    fn walk(m: &Module, env: &Env, e: &Expr, target: u32, pos: Pos, out: &mut Vec<String>) {
+        match e {
+            Expr::Binary(op, l, r, _) if matches!(op.as_str(), ">>" | ">>>") => {
+                if let Expr::Binary(inner, a, b, _) = &**l {
+                    if matches!(inner.as_str(), "+" | "-" | "*") && !signed_operand(a, env) && !signed_operand(b, env) {
+                        let exact = width_of(l, env).map(|w| w.width);
+                        let operands = [width_of(a, env), width_of(b, env)].into_iter().flatten().map(|w| w.width).max();
+                        if let (Some(exact), Some(operands)) = (exact, operands) {
+                            let evaluated = operands.max(target);
+                            if exact > evaluated {
+                                warn(out, m, pos, format!("'{}' is evaluated on {evaluated} bits before '>> {}': the bits above {evaluated} are lost (widen the operands, or cast the sum to {exact} bits)", text(l), text(r)));
+                            }
+                        }
+                    }
+                }
+                walk(m, env, l, target, pos, out);
+                walk(m, env, r, target, pos, out);
+            }
+            Expr::Binary(_, a, b, _) => {
+                walk(m, env, a, target, pos, out);
+                walk(m, env, b, target, pos, out);
+            }
+            Expr::Ternary(c, a, b) => {
+                walk(m, env, c, target, pos, out);
+                walk(m, env, a, target, pos, out);
+                walk(m, env, b, target, pos, out);
+            }
+            Expr::Unary(_, a) => walk(m, env, a, target, pos, out),
+            _ => {}
+        }
+    }
+    // the operands of a sum are signed when they are declared `int` (the `sign` checks own those)
+    fn signed_operand(e: &Expr, env: &Env) -> bool {
+        matches!(signed_of(e, env), Some(true))
+            || matches!(e, Expr::Ident(name, _) if env.signal(name).is_some_and(|(dt, _)| dt.name == "int" || dt.name == "integer"))
+    }
+    for it in &m.items {
+        match &it.kind {
+            ItemKind::ContAssign { lhs, rhs } => {
+                if let Some(target) = sized(lhs, env) {
+                    walk(m, env, rhs, target, it.pos, out);
+                }
+            }
+            ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
+                for (lhs, rhs, _, pos) in assignments(body) {
+                    if let Some(target) = sized(lhs, env) {
+                        walk(m, env, rhs, target, pos, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn target_wrapped(module: &str, lhs: &Expr, wrapped: &Wrapped) -> bool {
     parts(lhs).into_iter().filter_map(base).any(|n| wrapped.signals.contains(&(module.to_string(), n)))
 }
@@ -494,21 +574,25 @@ fn check_latches(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
     }
 }
 
-/// One driver of a signal: the item it is in, the target as written, and how the item drives it.
+/// One driver of a signal: the item it is in, the target as written, how the item drives it, and the flattened name
+/// of the target (`m[i].aw.valid` is `m_aw_valid`, the port of a vector of bundles).
 struct Driver {
     item: usize,
     target: String,
     kind: String,
     pos: Pos,
+    flat: String,
 }
 
-fn check_drivers(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<String>) {
+/// `undriven` gets the output ports that nothing drives (an error of the compiler, a warning of the lint).
+fn check_drivers(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<String>, undriven: &mut Vec<Error>) {
     let mut drivers: BTreeMap<String, Vec<Driver>> = BTreeMap::new();
     let mut maybe_driven: BTreeSet<String> = BTreeSet::new();
     let add = |drivers: &mut BTreeMap<String, Vec<Driver>>, lhs: &Expr, item: usize, kind: String, pos: Pos| {
         for part in parts(lhs) {
             if let Some(n) = base(part) {
-                drivers.entry(n).or_default().push(Driver { item, target: text(part), kind: kind.clone(), pos });
+                let flat = flat_name(part).unwrap_or_else(|| n.clone());
+                drivers.entry(n).or_default().push(Driver { item, target: text(part), kind: kind.clone(), pos, flat });
             }
         }
     };
@@ -531,6 +615,18 @@ fn check_drivers(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<Str
                         let (Some(p), Some(e)) = (&c.port, &c.expr) else { continue };
                         if target.ports.iter().any(|q| &q.name == p && q.dir == Dir::Output) {
                             add(&mut drivers, e, idx, format!("instance '{}'", i.name), it.pos);
+                        }
+                        // a bundle port of the target is connected whole: its output signals (`s_aw_ready`) drive the
+                        // bundle (`s`), with the same suffix
+                        let whole_bundle = !target.ports.iter().any(|q| &q.name == p);
+                        if let (true, Some(root)) = (whole_bundle, base(e)) {
+                            let flat = flat_name(e).unwrap_or_else(|| root.clone());
+                            for q in target.ports.iter().filter(|q| q.dir == Dir::Output) {
+                                if let Some(suffix) = q.name.strip_prefix(p.as_str()).and_then(|r| r.strip_prefix('_')) {
+                                    let kind = format!("instance '{}'", i.name);
+                                    drivers.entry(root.clone()).or_default().push(Driver { item: idx, target: text(e), kind, pos: it.pos, flat: format!("{flat}_{suffix}") });
+                                }
+                            }
                         }
                     }
                 }
@@ -558,9 +654,14 @@ fn check_drivers(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<Str
             }
         }
     }
+    // a port is driven when one of its drivers is the port, or a field of it (a struct port driven field by field)
+    let driven = |port: &str| {
+        drivers.values().flatten().any(|d| d.flat == port || d.flat.strip_prefix(port).is_some_and(|rest| rest.starts_with('_')))
+    };
     for p in m.ports.iter().filter(|p| p.dir == Dir::Output) {
-        if !drivers.contains_key(&p.name) && !maybe_driven.contains(&p.name) {
-            warn(out, m, m.pos, format!("output port '{}' of '{}' is never driven", p.name, m.name));
+        if !driven(&p.name) && !maybe_driven.contains(&p.name) {
+            let file = if m.origin.is_empty() { "<lint>" } else { m.origin.as_str() };
+            undriven.push(Error::new(format!("output port '{}' of '{}' is never driven", p.name, m.name), file, m.pos.0, m.pos.1));
         }
     }
 }
@@ -574,8 +675,10 @@ fn check_connections(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec
             continue;
         }
         let connected: BTreeSet<&str> = i.conns.iter().filter_map(|c| c.port.as_deref()).collect();
+        // an input the child never reads (a port of a feature it does not have, `WRITE_ENABLE(0)`) cannot be X in use
+        let read: BTreeSet<String> = target.items.iter().flat_map(mentioned).collect();
         for q in &target.ports {
-            if q.dir == Dir::Input && q.default.is_none() && !q.name.starts_with("ov_") && !connected.contains(q.name.as_str()) {
+            if q.dir == Dir::Input && q.default.is_none() && !q.name.starts_with("ov_") && !connected.contains(q.name.as_str()) && read.contains(&q.name) {
                 warn(out, m, it.pos, format!("input port '{}' of '{}' is not connected", q.name, i.module));
             }
         }

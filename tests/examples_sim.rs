@@ -1,4 +1,4 @@
-//! The examples simulated in Questa: each one compiles, its testbench passes, and the simulation has no error. Ported from
+//! The examples simulated with Verilator: each one compiles, its testbench passes, and the simulation has no error. Ported from
 //! the Python `tests/test_questa.py`. The testbenches are in `tests/tb` of the repository.
 
 mod common;
@@ -90,7 +90,7 @@ fn compile_example(name: &str, top: Option<&str>) -> Result<String, String> {
 /// Runs one case: the failure as text, or nothing when it passes.
 fn run_case(c: &Case) -> Result<(), String> {
     let dut = compile_example(c.example, c.top).map_err(|e| format!("{}: compile: {e}", c.id))?;
-    let dir = common::scratch(&format!("questa-{}", c.id));
+    let dir = common::scratch(&format!("examples-{}", c.id));
     fs::write(dir.join("dut.sv"), dut).unwrap();
     let defines: Vec<String> = c.generics.iter().filter(|(k, _)| *k == "DUT").map(|(_, v)| format!("+define+DUT={v}")).collect();
     let tb_path = testbench(c.tb).to_string_lossy().into_owned();
@@ -104,7 +104,7 @@ fn run_case(c: &Case) -> Result<(), String> {
     if !out.contains("PASS") {
         return Err(format!("{}: the testbench did not pass:\n{out}", c.id));
     }
-    if out.contains("** Error") {
+    if common::has_error(&out) {
         return Err(format!("{}: the simulation reported an error:\n{out}", c.id));
     }
     Ok(())
@@ -112,8 +112,7 @@ fn run_case(c: &Case) -> Result<(), String> {
 
 #[test]
 fn simulation() {
-    if !common::on_path("vsim") {
-        eprintln!("skipped: Questa (vsim) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let failures: Vec<String> = cases().iter().filter_map(|c| run_case(c).err()).collect();
@@ -122,40 +121,35 @@ fn simulation() {
 
 #[test]
 fn mixed_compiles() {
-    if !common::on_path("vlog") {
-        eprintln!("skipped: Questa (vlog) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let sv = compile_example("mixed", None).unwrap_or_else(|e| panic!("{e}"));
-    let dir = common::scratch("questa-mixed");
+    let dir = common::scratch("examples-mixed");
     fs::write(dir.join("dut.sv"), sv).unwrap();
-    common::questa(&dir, "vlib", &["work"]);
-    common::questa(&dir, "vlog", &["-sv", "dut.sv"]);
+    common::lint_only(&dir, &["dut.sv"]);
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn module_param_and_extends_compile() {
-    if !common::on_path("vlog") {
-        eprintln!("skipped: Questa (vlog) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let sv = compile_example("classes", Some("Top<KillableStage>")).unwrap_or_else(|e| panic!("{e}"));
-    let dir = common::scratch("questa-classes");
+    let dir = common::scratch("examples-classes");
     fs::write(dir.join("dut.sv"), sv).unwrap();
-    common::questa(&dir, "vlib", &["work"]);
-    common::questa(&dir, "vlog", &["-sv", "dut.sv"]);
+    common::lint_only(&dir, &["dut.sv"]);
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn pipeline_assertion_catches_lost_input() {
-    if !common::on_path("vsim") {
-        eprintln!("skipped: Questa (vsim) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let sv = compile_example("pipeline", Some("Slow")).unwrap_or_else(|e| panic!("{e}"));
-    let dir = common::scratch("questa-lost");
+    let dir = common::scratch("examples-lost");
     fs::write(dir.join("dut.sv"), sv).unwrap();
     let tb = testbench("slow_bad_tb").to_string_lossy().into_owned();
     let out = common::simulate(&dir, &["-sv", "dut.sv", tb.as_str()], "slow_bad_tb");

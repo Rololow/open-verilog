@@ -201,6 +201,8 @@ pub struct File {
     /// Structs (flattened to bit vectors) and typedefs of data types, visible to every module.
     pub structs: Vec<StructDef>,
     pub typedefs: Vec<(String, DType)>,
+    /// The file each typedef is written in (the same order as `typedefs`), for the clash of two files.
+    pub typedef_origin: Vec<(String, String)>,
 }
 
 /// An instruction set: `isa Name "desc" : opcode N [max M] { FORMAT = code "desc" { field : W [N]; } ... }`.

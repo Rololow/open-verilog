@@ -111,7 +111,10 @@ fn hier_write(s: &Stmt, is_hier: &dyn Fn(&[Seg]) -> bool) -> Option<(String, Pos
     }
 }
 
-fn method_call(e: &Expr, names: &HashMap<String, usize>) -> Option<(String, String, Pos, Vec<Expr>)> {
+/// A call of a method of an instance: the instance, the method, the position of its name, and the arguments.
+type CallSite = (String, String, Pos, Vec<Expr>);
+
+fn method_call(e: &Expr, names: &HashMap<String, usize>) -> Option<CallSite> {
     let Expr::Call(f, args) = e else { return None };
     let Expr::Member(base, method, at) = &**f else { return None };
     let Expr::Ident(inst, _) = &**base else { return None };
@@ -335,7 +338,7 @@ impl Threader<'_> {
         }
         // method calls on instances: each call site gets ports on the callee, and a wire here for its result
         let names = instances(&ms[m].items);
-        let sites: RefCell<Vec<(String, String, Pos, Vec<Expr>)>> = RefCell::new(Vec::new());
+        let sites: RefCell<Vec<CallSite>> = RefCell::new(Vec::new());
         for it in &ms[m].items {
             let _ = rewrite_item(it, &|e| {
                 if let Some(call) = method_call(e, &names) {

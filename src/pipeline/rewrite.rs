@@ -104,6 +104,7 @@ pub fn map_stmt(s: &Stmt, f: &mut Resolver) -> Result<Stmt, Failure> {
         Stmt::Val(name, e) => Stmt::Val(name.clone(), map_expr(e, f)?),
         Stmt::Return(e) => Stmt::Return(map_expr(e, f)?),
         Stmt::Goto(e) => Stmt::Goto(map_expr(e, f)?),
+        Stmt::Break(pos) => Stmt::Break(*pos),
         Stmt::ExprStmt(e) => Stmt::ExprStmt(map_expr(e, f)?),
     })
 }

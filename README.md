@@ -48,6 +48,10 @@ parameter (`C.tables.exp_residual`).
 
 The VS Code extension (`vscode-open-verilog`) starts it; any LSP client can.
 
+## Documentation
+
+The wiki (language, command line, lint, status): <https://github.com/Rololow/open-verilog/wiki>
+
 ## Status
 
 All 24 examples in `examples/` compile. 21 of them produce output identical to the reference (`expected/`), and
@@ -66,7 +70,8 @@ before replacing the Python compiler with this one.
 
 ### Not yet implemented
 
-- `ovc lint` and `ovc cover` of the reference: the Rust CLI does not have these subcommands yet.
+- The lint of plain SystemVerilog projects has no way to declare their clock and reset yet: their reset checks see nothing.
+- The coverage of a `match` inside an `always` block.
 
 Anything not supported is reported with a positioned error, not silently dropped.
 
@@ -92,6 +97,10 @@ Anything not supported is reported with a positioned error, not silently dropped
 cargo test
 cargo clippy --all-targets
 ```
+
+The simulations run with Verilator: directly on Linux, through WSL on Windows (the distribution `OVC_WSL_DISTRO`,
+`Ubuntu-24.04` by default). They run when Verilator is available, and are skipped otherwise, with a note. `OVC_SIM=off`
+skips them (the suite then takes well under a minute); `OVC_SIM=require` makes a missing Verilator a failure.
 
 The golden tests compare with `expected/`, byte for byte (the repository stores LF line endings on every platform,
 see `.gitattributes`). Unit tests in `tests/` cover diagnostics (positions, messages), the pipeline, declarations,

@@ -9,7 +9,7 @@ mod regmap;
 mod stmt;
 mod types;
 
-use crate::ast::File;
+use crate::ast::{File, Item, ItemKind};
 use crate::error::{Error, Result};
 use crate::lexer::{lex, Kind, Token};
 
@@ -64,23 +64,67 @@ pub struct Parser {
     fn_defs: Vec<(String, (usize, usize))>,
     /// The imports of the file: the package of each, and where it is written.
     imports: Vec<(String, (usize, usize))>,
+    /// The `for` loops the statement being parsed is in: a `break` outside them is an error.
+    loops: usize,
 }
 
 /// Parses a .ov file into its modules.
 pub fn parse_file(src: &str, file: &str) -> Result<File> {
+    parse_file_with_notes(src, src, file)
+}
+
+/// Parses `src`; the `// ovc:` annotations of a .sv file are read from `notes` (the text as written: the preprocessor of the
+/// lint removes the comments from `src`).
+pub fn parse_file_with_notes(src: &str, notes: &str, file: &str) -> Result<File> {
     let toks = lex(src, file)?;
-    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new() };
+    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new(), loops: 0 };
     let mut out = File::default();
     p.top_items(&mut out, None)?;
     out.enums.append(&mut p.hoisted_enums);
     out.imports = p.imports.into_iter().map(|(name, pos)| (name, pos, file.to_string())).collect();
+    out.typedef_origin = out.typedefs.iter().map(|(name, _)| (name.clone(), file.to_string())).collect();
+    if file.ends_with(".sv") {
+        annotate(&mut out, notes, file)?;
+    }
     Ok(out)
+}
+
+/// The clock and reset of a plain SystemVerilog module, declared in a comment: `// ovc: clock clk` and
+/// `// ovc: reset rst_n low` (the words of `clock` and `reset` are those of the `.ov` declarations). The lint reads them;
+/// the comment is the only change to the source. An annotation belongs to the module before it.
+fn annotate(out: &mut File, src: &str, file: &str) -> Result<()> {
+    const MARK: &str = "// ovc:";
+    for (idx, line) in src.lines().enumerate() {
+        let line_no = idx + 1;
+        let Some(at) = line.find(MARK) else { continue };
+        let col = at + 1;
+        let words: Vec<&str> = line[at + MARK.len()..].split_whitespace().collect();
+        let kind = match words.as_slice() {
+            ["clock", name] => ItemKind::Clock { name: name.to_string() },
+            ["reset", name, flags @ ..] if flags.iter().all(|f| *f == "low" || *f == "async") => {
+                ItemKind::Reset { name: name.to_string(), low: flags.contains(&"low"), is_async: flags.contains(&"async") }
+            }
+            _ => return Err(Error::new("expected `// ovc: clock NAME` or `// ovc: reset NAME [low] [async]`", file, line_no, col)),
+        };
+        let Some(module) = out.modules.iter_mut().rev().find(|m| m.pos.0 <= line_no) else {
+            return Err(Error::new("an `// ovc:` annotation must come after the module it declares", file, line_no, col));
+        };
+        let name = match &kind {
+            ItemKind::Clock { name } | ItemKind::Reset { name, .. } => name,
+            _ => unreachable!("annotate makes only clocks and resets"),
+        };
+        if !module.ports.iter().any(|p| &p.name == name) {
+            return Err(Error::new(format!("'{name}' is not a port of '{}': the annotation names a clock or reset port", module.name), file, line_no, col));
+        }
+        module.items.push(Item { pos: (line_no, col), kind });
+    }
+    Ok(())
 }
 
 /// One expression, as written in `.ov` (the whole text is the expression).
 pub fn parse_expr_text(src: &str, file: &str) -> Result<crate::ast::Expr> {
     let toks = lex(src, file)?;
-    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new() };
+    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new(), loops: 0 };
     let e = p.parse_expr(0)?;
     if p.tok().kind != Kind::Eof {
         return Err(p.fail(format!("unexpected '{}' after the expression", p.tok().text)));
@@ -91,7 +135,7 @@ pub fn parse_expr_text(src: &str, file: &str) -> Result<crate::ast::Expr> {
 /// A type on the command line, such as the top module with its arguments: `DarkRiscv<DarkCfg with { csr = true }>`.
 pub fn parse_top(src: &str, file: &str) -> Result<crate::ast::DType> {
     let toks = lex(src, file)?;
-    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new() };
+    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new(), loops: 0 };
     let dt = p.parse_dtype(false)?;
     if p.tok().kind != Kind::Eof {
         return Err(p.fail(format!("unexpected '{}' after the top module", p.tok().text)));

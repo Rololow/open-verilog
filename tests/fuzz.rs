@@ -1,6 +1,6 @@
-//! Random expressions: ovc (parse -> fold -> emit) must agree with Questa evaluating the same source text. This catches
+//! Random expressions: ovc (parse -> fold -> emit) must agree with Verilator evaluating the same source text. This catches
 //! precedence / parenthesization bugs in the parser and emitter, and constant-folding differences with SystemVerilog
-//! semantics. Ported from the Python `tests/test_fuzz.py`; the Questa comparison runs when vsim is on the PATH.
+//! semantics. Ported from the Python `tests/test_fuzz.py`; the Verilator comparison runs when it is available.
 
 mod common;
 
@@ -110,9 +110,8 @@ fn parse_emit_roundtrip() {
 }
 
 #[test]
-fn expressions_match_questa() {
-    if !common::on_path("vsim") {
-        eprintln!("skipped: Questa (vsim) is not on the PATH");
+fn expressions_match_verilator() {
+    if !common::simulator_enabled() {
         return;
     }
     let exprs = expressions(150, 7);

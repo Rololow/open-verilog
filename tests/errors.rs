@@ -2,7 +2,9 @@
 //! Python `tests/test_errors.py`).
 
 /// (name, source, the text the message must contain, the line and column of the error if it has a position)
-const CASES: &[(&str, &str, &str, Option<(usize, usize)>)] = &[
+type Case = (&'static str, &'static str, &'static str, Option<(usize, usize)>);
+
+const CASES: &[Case] = &[
     (
         "inconnu_suggestion",
         "module M(input clk, input rst, output logic [7:0] q) {
@@ -90,7 +92,7 @@ const CASES: &[(&str, &str, &str, Option<(usize, usize)>)] = &[
     (
         "import_unknown_package",
         "module M import Nope::*; (input clk) { }\n",
-        "package 'Nope' not found",
+        "unknown package 'Nope'",
         // at the package name, not at the keyword (the Python test pointed at the keyword)
         Some((1, 17)),
     ),
@@ -105,6 +107,20 @@ const CASES: &[(&str, &str, &str, Option<(usize, usize)>)] = &[
         "bundle S { output logic valid; input logic ready; }\nmodule A(master S o) { assign o.valid = 1; }\nmodule B(slave S i) { A a(.o(i)); }\n",
         "is a master bundle but is connected to a slave bundle port",
         Some((3, 23)),
+    ),
+    (
+        // the delay is in `Pe` (a val passed to the instance `Child`): the error is at `Pe`, not at `Child`
+        "delay_of_a_child_argument",
+        "module Child(input logic [7:0] t, output logic [7:0] y) {
+  assign y = t;
+}
+module Pe(input logic [7:0] a, output logic [7:0] y) {
+  val ar = a.delay(1);
+  Child c(.t(ar), .y(y));
+}
+",
+        "a delay register needs the module's clock",
+        Some((4, 1)),
     ),
 ];
 

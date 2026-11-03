@@ -19,7 +19,7 @@ pub fn generate(probes: &[(ProbeDef, String)], modules: &[Module], envs: &HashMa
         let module = modules
             .iter()
             .find(|m| &m.name == target)
-            .ok_or_else(|| Error::new(format!("probe '{}': module '{}' not found", probe.name, probe.module), file, probe.pos.0, probe.pos.1))?;
+            .ok_or_else(|| Error::new(format!("probe '{}': unknown module '{}'", probe.name, probe.module), file, probe.pos.0, probe.pos.1))?;
         // the clock the probe samples on: the target's declared clock
         let clock = envs
             .get(&module.name)

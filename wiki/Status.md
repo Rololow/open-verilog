@@ -20,4 +20,6 @@ still the reference, for example the clock-domain checks and the instruction-set
 
 ## Not implemented
 
-- `lint` and `cover` subcommands.
+- the coverage of a `match` inside an `always` block (see [Command line](Command-Line));
+- the lint of plain SystemVerilog modules that use constructs the compiler does not read yet (such as `break`) skips
+  them: they are reported as not analyzed.

@@ -6,11 +6,10 @@ use std::path::PathBuf;
 use ovc::lint::{self, Options};
 use ovc::preproc::Preprocessor;
 
+mod common;
+
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ovc_lint_{name}"));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+    common::scratch(name)
 }
 
 fn pre(text: &str, defines: &[(String, String)]) -> Result<String, ovc::error::Error> {
@@ -36,7 +35,7 @@ fn a_macro_with_arguments_is_expanded_by_parameter() {
 fn an_undefined_macro_is_an_error_at_its_place() {
     let err = pre("assign y = `NOPE;\n", &[]).unwrap_err();
     assert_eq!((err.line, err.col), (1, 12));
-    assert!(err.message.contains("macro `NOPE is not defined"));
+    assert!(err.message.contains("unknown macro `NOPE"));
 }
 
 #[test]
@@ -152,4 +151,57 @@ fn an_error_in_one_module_does_not_hide_the_findings_of_the_others() {
     assert!(report.findings.iter().any(|f| f.category == "latch"), "{:?}", report.findings);
     assert_eq!(report.skipped.len(), 1, "{:?}", report.skipped);
     assert!(report.skipped[0].message.contains("unknown identifier 'b'"));
+}
+
+/// A plain SystemVerilog file linted on its own: the findings and what was skipped, as messages.
+fn lint_sv_file(name: &str, src: &str) -> (Vec<String>, Vec<String>) {
+    let dir = scratch(name);
+    let file = dir.join(format!("{name}.sv"));
+    fs::write(&file, src).unwrap();
+    let opts = Options { files: vec![file.to_string_lossy().replace('\\', "/")], ..Options::default() };
+    let report = lint::run(&opts);
+    (report.findings.iter().map(|f| f.message.clone()).collect(), report.skipped.iter().map(|f| f.message.clone()).collect())
+}
+
+#[test]
+fn a_break_in_a_sv_loop_is_analysed() {
+    let (_, skipped) = lint_sv_file(
+        "break_sv",
+        "module P(input logic clk, input logic rst, input logic [3:0] req, output logic [1:0] who);
+  // ovc: clock clk
+  // ovc: reset rst
+  always @(posedge clk) begin
+    if (rst) who <= 0;
+    else begin
+      for (int j = 0; j < 4; j = j + 1) begin
+        if (req[j]) begin
+          who <= j;
+          break;
+        end
+      end
+    end
+  end
+endmodule
+",
+    );
+    assert!(skipped.is_empty(), "{skipped:?}");
+}
+
+#[test]
+fn a_localparam_in_a_generate_loop_is_analysed() {
+    let (_, skipped) = lint_sv_file(
+        "localparam_gen",
+        "module L #(parameter T = 2) (input wire clk, input wire [7:0] d [T-1:0], output reg [7:0] q [2*T-1:0]);
+  // ovc: clock clk
+  genvar j;
+  for (j = 0; j < T; j = j + 1) begin
+    localparam idx = 1 * T + j;
+    always @(posedge clk) begin
+      q[idx] <= d[j];
+    end
+  end
+endmodule
+",
+    );
+    assert!(skipped.is_empty(), "{skipped:?}");
 }

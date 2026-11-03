@@ -4,6 +4,12 @@
 ovc design.ov -o design.sv              # one file
 ovc a.ov b.ov                           # several files, SystemVerilog concatenated on stdout
 ovc build src/ -o out                   # every .ov under src/: one .sv per file, and a file list
+ovc build -f files.f --in-place         # the inputs from a file list, each .sv written next to its source (ovc_files.f)
+ovc build src/ --root src -o out       # the root of the mirrored folders (a source outside it is an error)
+
+The sources of `build` are not preprocessed: a file list with an option such as `+incdir+DIR` is refused. To check plain
+.sv files with their include directories and defines, use `ovc lint -f files.f`.
+ovc --version                          # the version of this build
 ovc design.ov --emit-tests tb.sv        # the `test` blocks as a testbench
 ovc design.ov --emit-probes probes.sv   # the `probe` blocks, bound into the design
 ovc design.ov --emit-isa-sv isa.sv      # the field positions of each instruction set (SystemVerilog package)
@@ -33,4 +39,5 @@ the compiler does not support is reported this way; nothing is dropped silently.
 - `ovc cover LOG...`: the coverage report of those simulation logs. Items are covered when any run covered them; the
   report lists what nothing covered, by file and line.
 
-Not in the Rust compiler yet: the coverage of `match` expressions (only `case` statements get items).
+Not in the Rust compiler yet: the coverage of a `match` in an `always` block (a `match` in a continuous assignment gets its
+items, reported at the assignment's line).

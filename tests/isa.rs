@@ -1,6 +1,6 @@
 //! isa: one description of the instruction formats -> decoding views, SV package, Python codec, documentation.
 //! Ported from the Python `tests/test_isa.py`. The codec runs in Python (when it is installed), the RTL decoder in
-//! Questa (when it is on the PATH).
+//! Verilator (when it is available).
 
 mod common;
 
@@ -111,8 +111,7 @@ fn unknown_field_in_a_view() {
 
 #[test]
 fn rtl_decodes_what_the_python_encoder_writes() {
-    if !common::on_path("vsim") {
-        eprintln!("skipped: Questa (vsim) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let dir = common::scratch("isa-rtl");
@@ -140,11 +139,11 @@ for _ in range(20):
         let w: Vec<&str> = line.split_whitespace().collect();
         match w.as_slice() {
             ["LD", en, addr, ld] => {
-                let ld = u64::from_str_radix(ld, 10).unwrap();
+                let ld: u64 = ld.parse().unwrap();
                 checks += &format!("instr = 64'h{ld:x}; #1; if (op !== 5 || en !== {en} || addr !== {addr} || len !== 18) $fatal(1, \"LD %h %h %h\", op, en, addr);\n    ");
             }
             ["BB", bank, r0, r1, r2, r3, bb] => {
-                let bb = u64::from_str_radix(bb, 10).unwrap();
+                let bb: u64 = bb.parse().unwrap();
                 let rd = [r0, r1, r2, r3];
                 let bank: usize = bank.parse().unwrap();
                 checks += &format!("instr = 64'h{bb:x}; bank = {bank}; #1; if (op !== 2 || rd2 !== {} || rdv !== {} || len !== 24) $fatal(1, \"BB %h %h\", rd2, rdv);\n    ", rd[2], rd[bank]);

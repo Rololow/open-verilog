@@ -72,19 +72,48 @@ fn channel_on_its_own_role_is_accepted() {
     // Mem's slave `ar` channel is an input of Mem, driven by the master outside: the Fifo may consume it
     let fixed = RD
         .replace("Fifo<logic [31:0], 2> f(.clk, .rst, .in(s.r), .out(q), .count());", "Fifo<AxAddr, 2> f(.clk, .rst, .in(s.ar), .out(q), .count());")
-        .replace("Stream<logic [31:0]> q;", "Stream<AxAddr> q;");
+        .replace("Stream<logic [31:0]> q;", "Stream<AxAddr> q;")
+        // Mem drives its `r` channel itself (it is an output of Mem)
+        .replace("  Fifo<AxAddr, 2> f(", "  assign s.r.valid = 0;\n  assign s.r.data = 0;\n  Fifo<AxAddr, 2> f(");
     let sv = sv_of(&fixed, "Mem");
     assert!(sv.contains(".in_valid(s_ar_valid)") && sv.contains(".in_ready(s_ar_ready)"), "{sv}");
 }
 
-/// The Python compiler refuses a slave port (the consumer of a stream) connected to the channel the module itself drives
-/// (`in(s.r)`: `Mem` drives `s.r`, and nothing else would). The compiler does not check the role of a nested channel yet:
-/// the connection is accepted, and `s.r.valid` is left undriven.
+/// `Mem` consumes `s.r` (through its `Fifo`) but drives nothing of the channels it outputs: the outputs of the module
+/// that nothing drives are refused, nested channels included.
 #[test]
-#[ignore = "not implemented: the role of a nested channel is not checked when a slave port is connected to it"]
-fn slave_port_on_a_channel_the_module_drives_is_refused() {
+fn a_nested_channel_the_module_leaves_undriven_is_refused() {
     let msg = message_of(RD, "Mem");
-    assert!(msg.contains("port 'in' is a slave bundle but is connected to a master bundle port"), "{msg}");
+    assert!(msg.contains("of 'Mem' is never driven"), "{msg}");
+}
+
+/// A bundle connected whole to a child that drives its outputs: they are driven by the child, so the parent compiles.
+#[test]
+fn a_bundle_driven_by_a_child_instance_compiles() {
+    let src = "
+bundle Ax { output logic valid; input logic ready; }
+module Child(input clk, input rst, slave Ax s) {
+  clock clk;
+  reset rst;
+  assign s.ready = 1;
+}
+module Top(input clk, input rst, slave Ax s) {
+  clock clk;
+  reset rst;
+  Child c(.clk, .rst, .s);
+}
+";
+    sv_of(src, "Top");
+}
+
+/// The same module, with its outputs driven, compiles.
+#[test]
+fn a_nested_channel_the_module_drives_compiles() {
+    let fixed = RD.replace(
+        "  Fifo<logic [31:0], 2> f(.clk, .rst, .in(s.r), .out(q), .count());",
+        "  Fifo<logic [31:0], 2> f(.clk, .rst, .in(s.r), .out(q), .count());\n  assign s.ar.ready = 1;\n  assign s.r.valid = 0;\n  assign s.r.data = 0;",
+    );
+    sv_of(&fixed, "Mem");
 }
 
 #[test]
@@ -188,4 +217,11 @@ module M(input clk, input rst, slave Stream<A> a, slave Stream<B> b, output logi
         "M",
     );
     assert!(sv.contains("assign r = b_data.resp;") && sv.contains("assign l = a_data.last;"), "{sv}");
+}
+
+/// Every undriven output of the design is listed, not only the first one.
+#[test]
+fn every_undriven_output_is_listed() {
+    let msg = message_of("module Two(input logic a, output logic x, output logic y) { }", "Two");
+    assert!(msg.contains("output port 'x' of 'Two' is never driven") && msg.contains("output port 'y' of 'Two' is never driven"), "{msg}");
 }

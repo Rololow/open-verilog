@@ -292,6 +292,7 @@ impl Emitter {
                 }
             }
             Stmt::Decl(d) => self.decl(d)?,
+            Stmt::Break(_) => {}
             Stmt::Return(_) | Stmt::Goto(_) | Stmt::Val(..) => {
                 return Err(Error::new("this statement is not supported in SystemVerilog output yet", "", 0, 0));
             }

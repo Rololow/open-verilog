@@ -1,5 +1,5 @@
 //! Multi-file projects: `ovc build` keeps the folder structure and resolves names across files. Ported from the Python
-//! `tests/test_project.py`; the output is compiled with Questa (`vlog`) when it is on the PATH.
+//! `tests/test_project.py`; the output is linted with Verilator when it is available.
 
 mod common;
 
@@ -123,8 +123,7 @@ fn duplicate_module_across_files() {
 
 #[test]
 fn output_compiles_with_its_file_list() {
-    if !common::on_path("vlog") {
-        eprintln!("skipped: Questa (vlog) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let dir = common::scratch("project-vlog");
@@ -132,10 +131,7 @@ fn output_compiles_with_its_file_list() {
     let (ok, err) = ovc(&dir, &["build", "src"]);
     assert!(ok, "{err}");
     // the file list names the files from the folder the build ran in
-    let out = Command::new("vlib").arg("work").current_dir(&dir).output().unwrap();
-    assert!(out.status.success());
-    let r = Command::new("vlog").args(["-sv", "-f", "out/files.f"]).current_dir(&dir).output().unwrap();
-    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stdout));
+    common::lint_only(&dir, &["-f", "out/files.f"]);
     let _ = fs::remove_dir_all(&dir);
 }
 

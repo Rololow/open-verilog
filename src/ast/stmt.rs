@@ -16,6 +16,9 @@ pub enum Stmt {
     Case { subject: Expr, kind: String, arms: Vec<(Option<Vec<Expr>>, Stmt)>, pos: Pos },
     Decl(Decl),
     Return(Expr),
+    /// `break;` in a `for` loop: the iterations after it do nothing. The parser lowers every loop that has one to
+    /// a flag, so `Break` never reaches the elaboration; the position is the `break` keyword.
+    Break(Pos),
     /// `goto State;` inside an fsm: the next state.
     Goto(Expr),
     ExprStmt(Expr),

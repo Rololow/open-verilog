@@ -45,6 +45,11 @@ pub(crate) fn note_fold_error(msg: impl Into<String>) {
     });
 }
 
+/// Replaces the recorded error, and returns the one that was there.
+pub(crate) fn swap_fold_error(error: Option<String>) -> Option<String> {
+    FOLD_ERROR.with(|f| std::mem::replace(&mut *f.borrow_mut(), error))
+}
+
 /// The error recorded while folding the module just elaborated, if any (and clears it).
 pub(crate) fn take_fold_error() -> Option<String> {
     FOLD_ERROR.with(|f| f.borrow_mut().take())
@@ -1202,6 +1207,7 @@ pub fn fold_stmt(s: &Stmt, env: &Env) -> Stmt {
         }),
         Stmt::Return(e) => Stmt::Return(fold_expr(e, env)),
         Stmt::Goto(e) => Stmt::Goto(fold_expr(e, env)),
+        Stmt::Break(pos) => Stmt::Break(*pos),
         Stmt::ExprStmt(e) => Stmt::ExprStmt(fold_expr(e, env)),
     }
 }

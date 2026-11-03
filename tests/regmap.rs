@@ -1,5 +1,5 @@
 //! Register maps: one source for the RTL block, the C header and the documentation. Ported from the Python
-//! `tests/test_regmap.py`; the simulations run only when Questa is on the PATH.
+//! `tests/test_regmap.py`; the simulations run only when Verilator is available.
 
 mod common;
 
@@ -72,8 +72,7 @@ fn errors_are_reported_at_the_mistake() {
 
 #[test]
 fn software_view_matches_hardware() {
-    if !common::on_path("vsim") {
-        eprintln!("skipped: Questa (vsim) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     // the testbench only uses the values of the generated C header: offsets, masks, resets
@@ -162,8 +161,7 @@ fn const_counter_strobe_and_byte_enables_generate() {
 
 #[test]
 fn csr_behaviour() {
-    if !common::on_path("vsim") {
-        eprintln!("skipped: Questa (vsim) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let c = compiled(CSR);

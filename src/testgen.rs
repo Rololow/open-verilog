@@ -33,7 +33,7 @@ pub fn generate(tests: &[(TestDef, String)], modules: &[Module], envs: &HashMap<
         let module = modules
             .iter()
             .find(|m| &m.name == dut)
-            .ok_or_else(|| Error::new(format!("module '{}' not found for a test", test.module), file, test.pos.0, test.pos.1))?;
+            .ok_or_else(|| Error::new(format!("unknown module '{}' in a test", test.module), file, test.pos.0, test.pos.1))?;
         let env = envs.get(dut).cloned().unwrap_or_default();
         out += &test_module(k, test, module, env, procs)?;
         out.push('\n');

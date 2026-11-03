@@ -127,6 +127,11 @@ fn hoist(s: &crate::ast::Stmt, scope: &HashMap<String, String>, decls: &mut Vec<
             let mut local = scope.clone();
             let mut out = Vec::new();
             for st in stmts {
+                // the flag of a `break` (see the parser) stays a variable of its block: it is written before it is read
+                if matches!(st, Stmt::Decl(d) if d.decls.iter().all(|x| x.name.starts_with("ov_brk_"))) {
+                    out.push(st.clone());
+                    continue;
+                }
                 if let Stmt::Decl(d) = st {
                     for x in &d.decls {
                         let fresh = format!("ov_l{}_{}", *counter, x.name);
@@ -174,6 +179,7 @@ fn hoist(s: &crate::ast::Stmt, scope: &HashMap<String, String>, decls: &mut Vec<
         Stmt::Val(name, e) => Stmt::Val(name.clone(), ex(e)),
         Stmt::Return(e) => Stmt::Return(ex(e)),
         Stmt::Goto(e) => Stmt::Goto(ex(e)),
+        Stmt::Break(pos) => Stmt::Break(*pos),
         Stmt::Decl(d) => Stmt::Decl(d.clone()),
     }
 }

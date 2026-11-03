@@ -58,7 +58,7 @@ pub struct Summary {
 }
 
 /// Checks every module (children before parents) and returns the warnings, or the first error.
-pub fn check(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>, resets: &HashMap<String, Option<String>>) -> Result<Vec<String>> {
+pub fn check(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>, resets: &HashMap<String, Option<(String, bool)>>) -> Result<Vec<String>> {
     let (warnings, errors) = check_all(modules, handshakes, resets);
     match errors.into_iter().next() {
         Some(first) => Err(first),
@@ -69,14 +69,14 @@ pub fn check(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, 
 /// Every error and every warning of the check, not only the first error: a module with an error is left out (its
 /// summary is empty), and the modules after it are checked as before. `lint` reports all of them.
 /// `resets`: the reset each module declares (`reset rst;`), by module name: only that name is a reset in its blocks.
-pub fn check_all(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>, resets: &HashMap<String, Option<String>>) -> (Vec<String>, Vec<Error>) {
+pub fn check_all(modules: &[Module], handshakes: &HashMap<String, Vec<(String, Dir, String)>>, resets: &HashMap<String, Option<(String, bool)>>) -> (Vec<String>, Vec<Error>) {
     let mut summaries: HashMap<String, Summary> = HashMap::new();
     let mut warnings: Vec<String> = Vec::new();
     let mut errors: Vec<Error> = Vec::new();
     for m in modules {
         let empty = Vec::new();
         let declared = resets.get(&m.name).cloned().flatten();
-        let summary = match check_module(m, handshakes.get(&m.name).unwrap_or(&empty), &summaries, declared.as_deref(), &mut warnings) {
+        let summary = match check_module(m, handshakes.get(&m.name).unwrap_or(&empty), &summaries, declared.as_ref().map(|(name, low)| (name.as_str(), *low)), &mut warnings) {
             Ok(summary) => summary,
             Err(e) => {
                 errors.push(e);
@@ -426,7 +426,7 @@ fn check_module(
     m: &Module,
     handshakes: &[(String, Dir, String)],
     summaries: &HashMap<String, Summary>,
-    declared_reset: Option<&str>,
+    declared_reset: Option<(&str, bool)>,
     warnings: &mut Vec<String>,
 ) -> Result<Summary> {
     let items = flatten_items(&m.items);
@@ -537,7 +537,7 @@ fn check_module(
                 // a synchronous reset: the first test of the block
                 if edges.len() == 1 {
                     if let Some((name, active)) = reset_condition(body) {
-                        if declared_reset == Some(name.as_str()) && ck.signals.contains(&name) && name != clk {
+                        if declared_reset.map(|(d, _)| d) == Some(name.as_str()) && ck.signals.contains(&name) && name != clk {
                             uses.entry(name).or_default().entry(("sync".into(), active)).or_insert_with(|| here(it.pos));
                         }
                     }
@@ -670,7 +670,7 @@ fn check_module(
             summary.outputs.insert(p.name.clone(), ck.dom.get(&p.name).cloned().unwrap_or_default());
         }
     }
-    check_resets(m, &ports, &uses, &inst_maps, &mut summary, warnings);
+    check_resets(m, &ports, &uses, &inst_maps, declared_reset, &mut summary, warnings);
     Ok(summary)
 }
 
@@ -681,6 +681,7 @@ fn check_resets(
     ports: &BTreeMap<&str, &Port>,
     uses: &BTreeMap<String, BTreeMap<(String, String), Where>>,
     inst_maps: &[InstMap],
+    declared_reset: Option<(&str, bool)>,
     summary: &mut Summary,
     warnings: &mut Vec<String>,
 ) {
@@ -717,6 +718,17 @@ fn check_resets(
     for (n, kinds) in &uses {
         // the node a warning is reported at: the first direct use, else the module
         let pos = kinds.values().find(|w| w.module.is_none()).map(|w| w.pos).unwrap_or(m.pos);
+        // a declared reset that the module's own tests use with the other polarity (`reset rst;` and `if (!rst)`); a
+        // use in both polarities is reported below, and a child's use is checked in the child
+        if let Some((declared, low)) = declared_reset.filter(|(d, _)| *d == n.as_str()) {
+            let want = if low { "low" } else { "high" };
+            let actives: BTreeSet<&String> = kinds.keys().map(|(_, a)| a).collect();
+            if actives.len() == 1 && !actives.contains(&want.to_string()) {
+                if let Some(((_, other), w)) = kinds.iter().find(|((_, a), w)| a != want && w.module.is_none()) {
+                    report(format!("reset '{declared}' is declared active {want} but tested active {other} in {}", w.show()), pos);
+                }
+            }
+        }
         if !inherited.contains(n) {
             let has_async = kinds.keys().any(|(k, _)| k == "async");
             let has_sync = kinds.keys().any(|(k, _)| k == "sync");

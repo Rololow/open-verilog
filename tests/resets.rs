@@ -80,7 +80,7 @@ fn reported_once_where_the_uses_meet() {
         "{CORE}
 module Mid(input clk, input rst, input logic [7:0] d, output logic [7:0] q, output logic [7:0] r) {{
   clock clk;
-  reset rst;
+  reset rst low;
 
   always_ff @(posedge clk or negedge rst) {{ if (!rst) {{ r <= 0; }} else {{ r <= d; }} }}
   Core c(.clk, .i_rst(rst), .d, .q);
@@ -105,7 +105,7 @@ module Mid(input clk, input rst, input logic [7:0] d, output logic [7:0] q) {{
 }}
 module Top(input clk, input rst, input logic [7:0] d, output logic [7:0] q, output logic [7:0] r) {{
   clock clk;
-  reset rst;
+  reset rst low;
 
   always_ff @(posedge clk or negedge rst) {{ if (!rst) {{ r <= 0; }} else {{ r <= d; }} }}
   Mid m(.clk, .rst, .d, .q);
@@ -182,4 +182,73 @@ module M(input clk, input rst, input logic en, input logic [1:0] i, output logic
     for k in 0..4 {
         assert!(sv.contains(&format!("cnt[{k}] <= 0;")), "{sv}");
     }
+}
+
+/// Lints one plain SystemVerilog file (its name is `name.sv`): the findings and what was skipped, as messages.
+fn lint_sv(name: &str, src: &str) -> (Vec<String>, Vec<String>) {
+    let dir = std::env::temp_dir().join(format!("ovc_sv_annotations_{name}"));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("{name}.sv"));
+    fs::write(&file, src).unwrap();
+    let opts = Options { files: vec![file.to_string_lossy().replace('\\', "/")], ..Options::default() };
+    let report = lint::run(&opts);
+    (report.findings.iter().map(|f| f.message.clone()).collect(), report.skipped.iter().map(|f| f.message.clone()).collect())
+}
+
+#[test]
+fn an_annotated_sv_reset_tested_with_the_other_polarity_is_reported() {
+    let (findings, skipped) = lint_sv(
+        "polarity",
+        "module Plain(input clk, input rst_n, output reg [3:0] q);
+  // ovc: clock clk
+  // ovc: reset rst_n
+  always @(posedge clk) if (!rst_n) q <= 0; else q <= q + 1;
+endmodule
+",
+    );
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert!(findings.iter().any(|m| m.contains("reset 'rst_n' is declared active high but tested active low in Plain")), "{findings:?}");
+}
+
+#[test]
+fn an_annotated_sv_reset_used_as_declared_is_clean() {
+    let (findings, skipped) = lint_sv(
+        "clean",
+        "module Plain(input clk, input rst_n, output reg [3:0] q);
+  // ovc: clock clk
+  // ovc: reset rst_n low
+  always @(posedge clk) if (!rst_n) q <= 0; else q <= q + 1;
+endmodule
+",
+    );
+    assert!(skipped.is_empty(), "{skipped:?}");
+    assert!(!findings.iter().any(|m| m.contains("reset")), "{findings:?}");
+}
+
+#[test]
+fn an_annotation_naming_no_port_is_refused() {
+    let (_, skipped) = lint_sv(
+        "noport",
+        "module Plain(input clk, output reg [3:0] q);
+  // ovc: clock clk
+  // ovc: reset rst_n low
+  always @(posedge clk) q <= q + 1;
+endmodule
+",
+    );
+    assert!(skipped.iter().any(|m| m.contains("'rst_n' is not a port of 'Plain'")), "{skipped:?}");
+}
+
+#[test]
+fn a_malformed_annotation_is_refused() {
+    let (_, skipped) = lint_sv(
+        "malformed",
+        "module Plain(input clk, output reg [3:0] q);
+  // ovc: clock
+  always @(posedge clk) q <= q + 1;
+endmodule
+",
+    );
+    assert!(skipped.iter().any(|m| m.contains("expected `// ovc: clock NAME`")), "{skipped:?}");
 }

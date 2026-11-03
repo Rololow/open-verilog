@@ -1,7 +1,7 @@
 //! Statements, case arms and `for` headers.
 
 use super::{Parser, ASSIGN_OPS, BASE_TYPES};
-use crate::ast::{Expr, ForHeader, Stmt};
+use crate::ast::{Decl, DType, Declarator, Expr, ForHeader, Pos, Stmt};
 use crate::error::Result;
 use crate::lexer::Kind;
 
@@ -32,7 +32,10 @@ impl Parser {
             "for" => {
                 let header = self.parse_for_header()?;
                 let pre = std::mem::take(&mut self.unpack);
-                let body = self.parse_stmt()?;
+                self.loops += 1;
+                let body = self.parse_stmt();
+                self.loops -= 1;
+                let body = body?;
                 let body = if pre.is_empty() {
                     body
                 } else {
@@ -40,9 +43,21 @@ impl Parser {
                     stmts.push(body);
                     Stmt::Block(stmts)
                 };
+                if has_break(&body) {
+                    return Ok(lower_breaks(&header, body));
+                }
                 Ok(Stmt::For { header, body: Box::new(body) })
             }
             "case" | "casez" | "casex" => self.parse_case(),
+            "break" if self.peek(1).text == ";" => {
+                if self.loops == 0 {
+                    return Err(self.fail("'break' is only allowed in a for loop"));
+                }
+                let pos = (self.tok().line, self.tok().col);
+                self.i += 1;
+                self.expect(";")?;
+                Ok(Stmt::Break(pos))
+            }
             "goto" => {
                 self.i += 1;
                 let e = self.parse_expr(0)?;
@@ -289,4 +304,69 @@ impl Parser {
             Err(self.fail(format!("unsupported loop step: expected '{var}++', '{var} += k' or '{var}--'")))
         }
     }
+}
+
+/// Whether a statement has a `break` (of the loop it is in: the loops inside it are lowered already).
+fn has_break(s: &Stmt) -> bool {
+    match s {
+        Stmt::Break(_) => true,
+        Stmt::Block(list) => list.iter().any(has_break),
+        Stmt::If { then, els, .. } => has_break(then) || els.as_deref().is_some_and(has_break),
+        Stmt::Case { arms, .. } => arms.iter().any(|(_, arm)| has_break(arm)),
+        Stmt::For { body, .. } => has_break(body),
+        _ => false,
+    }
+}
+
+/// A `for` loop with a `break` as a loop with a flag, as SystemVerilog means it: the flag is cleared before the loop, the
+/// `break` sets it, and the rest of the body does nothing once it is set. The statements after a `break` in the same
+/// block are never reached, so they are dropped. The flag is named after the position of the loop (unique in the file).
+fn lower_breaks(header: &ForHeader, body: Stmt) -> Stmt {
+    if !has_break(&body) {
+        return body;
+    }
+    let flag = format!("ov_brk_{}_{}", header.pos.0, header.pos.1);
+    let set = |pos| Stmt::Assign { lhs: Expr::Ident(flag.clone(), pos), rhs: Expr::Num("1".into()), nonblocking: false, pos };
+    let not_set = Expr::Unary("!".into(), Box::new(Expr::Ident(flag.clone(), header.pos)));
+    fn lower(s: &Stmt, set: &dyn Fn(Pos) -> Stmt, not_set: &Expr) -> Stmt {
+        match s {
+            Stmt::Break(pos) => set(*pos),
+            Stmt::Block(list) => {
+                let mut out = Vec::new();
+                let mut guarded = false;
+                for st in list {
+                    if let Stmt::Break(pos) = st {
+                        out.push(set(*pos));
+                        break;
+                    }
+                    let lowered = lower(st, set, not_set);
+                    out.push(if guarded { Stmt::If { cond: not_set.clone(), then: Box::new(lowered), els: None } } else { lowered });
+                    guarded |= has_break(st);
+                }
+                Stmt::Block(out)
+            }
+            Stmt::If { cond, then, els } => Stmt::If {
+                cond: cond.clone(),
+                then: Box::new(lower(then, set, not_set)),
+                els: els.as_deref().map(|e| Box::new(lower(e, set, not_set))),
+            },
+            Stmt::Case { subject, kind, arms, pos } => Stmt::Case {
+                subject: subject.clone(),
+                kind: kind.clone(),
+                arms: arms.iter().map(|(labels, arm)| (labels.clone(), lower(arm, set, not_set))).collect(),
+                pos: *pos,
+            },
+            other => other.clone(),
+        }
+    }
+    let inner = Stmt::If { cond: not_set.clone(), then: Box::new(lower(&body, &set, &not_set)), els: None };
+    let decl = Stmt::Decl(Decl {
+        dtype: DType { name: "logic".into(), ..DType::default() },
+        decls: vec![Declarator { name: flag.clone(), dims: Vec::new(), init: None }],
+        is_const: false,
+        is_async: false,
+    });
+    let clear = Stmt::Assign { lhs: Expr::Ident(flag.clone(), header.pos), rhs: Expr::Num("0".into()), nonblocking: false, pos: header.pos };
+    let looped = Stmt::For { header: header.clone(), body: Box::new(inner) };
+    Stmt::Block(vec![decl, clear, looped])
 }

@@ -1,7 +1,6 @@
 //! `.as(Struct<args>)`: a view of a packed word through a parametric struct (the argument is a type). Ported from the
 //! Python `tests/test_as_struct.py`.
 
-use ovc::Options;
 
 const SRC: &str = "
 config Cfg { W = 24; }
@@ -44,7 +43,3 @@ module P(input logic [23:0] a, output logic [10:0] lo) { val w = a.as(Word24); a
     assert!(sv.contains("assign lo = w[23:13];"), "{sv}");
 }
 
-#[allow(dead_code)]
-fn options() -> Options {
-    Options { asserts: true, top: None, cover: false }
-}

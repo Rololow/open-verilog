@@ -433,7 +433,7 @@ impl<'a> Lowering<'a, '_> {
     /// `pipe.x` is the raw input port; `s.valid` is the valid bit of stage `s`; `s.fire` the fire signal of `s`.
     fn resolve_node(&mut self, node: &Expr, cur: Option<usize>) -> std::result::Result<Option<Expr>, Failure> {
         match node {
-            Expr::Member(base, field, _) => {
+            Expr::Member(base, field, at) => {
                 let Expr::Ident(target, _) = &**base else { return Ok(None) };
                 if target == "pipe" {
                     return Ok(Some(Expr::Ident(field.clone(), (0, 0))));
@@ -448,8 +448,16 @@ impl<'a> Lowering<'a, '_> {
                     _ => {}
                 }
                 let Some(sig) = self.owners.get(field) else {
-                    return Err(((0, 0), format!("'{field}' is not a pipeline signal")));
+                    // a `val` without a width is an inline value, not a signal: it cannot be read from another stage
+                    let hint = format!("for example `logic [7:0] {field} = ...` in stage '{target}'");
+                    return Err((*at, format!("'{field}' is not a signal of the pipeline: a value is a signal only when it has a width, {hint}")));
                 };
+                // `s.x` names the stage that defines `x`: `x` is carried from an earlier stage, or read combinationally
+                // when `s` is the stage that defines it (`ex.v` read in `dec` is forwarded from `ex`). `dec.v`, with `v`
+                // defined in a later stage, names a stage that does not have `v`: refused
+                if sig.stage > t {
+                    return Err((*at, format!("'{field}' is not defined in stage '{target}' or before it")));
+                }
                 Ok(Some(self.value_in(field, sig.stage, t)))
             }
             Expr::Ident(name, at) => {

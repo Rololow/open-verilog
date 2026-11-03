@@ -93,7 +93,7 @@ pub fn compile_units(units: &[(String, String)], options: &Options) -> Result<Co
 fn check_imports(source: &File) -> Result<()> {
     for (name, (line, col), file) in &source.imports {
         if !source.packages.contains(name) {
-            return Err(Error::new(format!("package '{name}' not found"), file, *line, *col));
+            return Err(Error::new(format!("unknown package '{name}'"), file, *line, *col));
         }
     }
     Ok(())
@@ -110,20 +110,26 @@ pub struct LintOutput {
 /// (a module that nothing instantiates) is elaborated on its own, so that an error stops only the top modules it is in.
 pub fn lint_parsed(parsed: Vec<File>, top: Option<&ast::DType>) -> Result<LintOutput> {
     let mut source = File::default();
-    for unit in parsed {
+    // a typedef defined in two files is a finding; the first definition is kept
+    let mut clashes: Vec<String> = Vec::new();
+    for mut unit in parsed {
+        clashes.extend(drop_typedef_clashes(&source, &mut unit).iter().map(located_warning));
         merge(&mut source, unit)?;
     }
     library::merge(&mut source)?;
     check_imports(&source)?;
     let wrapped = checks::wrapped_in(&source);
+    let mut early = clashes;
+    early.extend(sv_selects_of_expressions(&source));
+    let with_early = |out: LintOutput| LintOutput { warnings: early.iter().cloned().chain(out.warnings).collect(), ..out };
     if let Some(root) = top {
-        return Ok(match lint_top(&source, Some(root), &wrapped) {
+        return Ok(with_early(match lint_top(&source, Some(root), &wrapped) {
             Ok((warnings, errors)) => LintOutput { warnings, errors, skipped: Vec::new() },
             Err(e) => LintOutput { warnings: Vec::new(), errors: Vec::new(), skipped: vec![e] },
-        });
+        }));
     }
     match lint_top(&source, None, &wrapped) {
-        Ok((warnings, errors)) => Ok(LintOutput { warnings, errors, skipped: Vec::new() }),
+        Ok((warnings, errors)) => Ok(with_early(LintOutput { warnings, errors, skipped: Vec::new() })),
         Err(_) => {
             let mut out = LintOutput { warnings: Vec::new(), errors: Vec::new(), skipped: Vec::new() };
             for root in top_modules(&source) {
@@ -136,9 +142,45 @@ pub fn lint_parsed(parsed: Vec<File>, top: Option<&ast::DType>) -> Result<LintOu
                     Err(e) => out.skipped.push(e),
                 }
             }
-            Ok(out)
+            Ok(with_early(out))
         }
     }
+}
+
+/// A finding of the lint, as the file and position it is in: `file:line:col: warning: message`.
+fn located_warning(e: &Error) -> String {
+    format!("{}:{}:{}: warning: {}", e.file, e.line, e.col, e.message)
+}
+
+/// A select of bits of an expression in SystemVerilog source (`(a & b)[3:0]`): SV does not allow it, and the `.ov` form
+/// is only lowered by the compiler, so the lint finds it before elaboration. Only the `.sv` files are looked at.
+fn sv_selects_of_expressions(source: &File) -> Vec<String> {
+    fn names_bits(e: &ast::Expr) -> bool {
+        match e {
+            ast::Expr::Ident(..) => true,
+            ast::Expr::Member(base, ..) | ast::Expr::Index(base, _) => names_bits(base),
+            _ => false,
+        }
+    }
+    let mut out = Vec::new();
+    for m in source.modules.iter().filter(|m| m.origin.ends_with(".sv")) {
+        for it in &m.items {
+            let found: std::cell::RefCell<Vec<String>> = std::cell::RefCell::new(Vec::new());
+            let _ = pipeline::arrays::rewrite_item(it, &|e| {
+                if let ast::Expr::Slice(base, ..) | ast::Expr::Index(base, _) = e {
+                    if !names_bits(base) {
+                        let text = emit::expr::expr(base, -1, false).unwrap_or_default();
+                        found.borrow_mut().push(format!("'{text}' selects bits of an expression, which is not valid SystemVerilog: name the expression, or shift it"));
+                    }
+                }
+                Ok(None)
+            });
+            for text in found.into_inner() {
+                out.push(format!("{}:{}:{}: warning: {text}", m.origin, it.pos.0, it.pos.1));
+            }
+        }
+    }
+    out
 }
 
 /// The checks of one elaboration (the whole design, or one top module).
@@ -196,6 +238,15 @@ pub fn compile_parsed(parsed: Vec<File>, options: &Options) -> Result<Compiled> 
     let elab::Elaborated { mut modules, pipelines, mut warnings, tests, probes, envs, procs, memmaps, records, isas, packages, handshakes } =
         elab::elaborate(&source, "<project>", options.asserts, options.cover, top.as_ref())?;
     hier::thread(&mut modules, "<project>")?;
+    // every undriven output is listed (the error is at the first one)
+    let undriven = checks::undriven_outputs(&modules);
+    if let Some(first) = undriven.first() {
+        let mut e = first.clone();
+        if undriven.len() > 1 {
+            e.message = undriven.iter().map(|u| format!("{} ({}:{}:{})", u.message, u.file, u.line, u.col)).collect::<Vec<_>>().join("\n  ");
+        }
+        return Err(e);
+    }
     // the clock domains are checked on the design as elaborated and connected: children before parents
     warnings.extend(domains::check(&modules, &handshakes, &declared_resets(&envs))?);
     let tests_sv = if tests.is_empty() { None } else { Some(testgen::generate(&tests, &modules, &envs, &procs, "<project>")?) };
@@ -234,7 +285,26 @@ fn split_by_origin(modules: &[ast::Module]) -> Result<Vec<(String, String)>> {
 }
 
 /// Adds the definitions of one unit to the design. A module defined twice is an error.
-fn merge(design: &mut File, unit: File) -> Result<()> {
+/// The typedefs of `unit` that `design` already defines (another file's), which are left out of the unit.
+fn drop_typedef_clashes(design: &File, unit: &mut File) -> Vec<Error> {
+    let mut clashes = Vec::new();
+    let mut keep = Vec::new();
+    for (name, origin) in std::mem::take(&mut unit.typedef_origin) {
+        match design.typedef_origin.iter().find(|(n, _)| *n == name) {
+            Some((_, first)) => clashes.push(Error::new(format!("'{name}' is already defined at {first}"), &origin, 1, 1)),
+            None => keep.push((name, origin)),
+        }
+    }
+    let kept: Vec<String> = keep.iter().map(|(n, _)| n.clone()).collect();
+    unit.typedefs.retain(|(n, _)| kept.contains(n));
+    unit.typedef_origin = keep;
+    clashes
+}
+
+fn merge(design: &mut File, mut unit: File) -> Result<()> {
+    if let Some(clash) = drop_typedef_clashes(design, &mut unit).into_iter().next() {
+        return Err(clash);
+    }
     for m in &unit.modules {
         if let Some(prev) = design.modules.iter().find(|p| p.name == m.name) {
             return Err(Error::new(
@@ -254,6 +324,7 @@ fn merge(design: &mut File, unit: File) -> Result<()> {
     design.fns.extend(unit.fns);
     design.structs.extend(unit.structs);
     design.typedefs.extend(unit.typedefs);
+    design.typedef_origin.extend(unit.typedef_origin);
     design.bundles.extend(unit.bundles);
     design.configs.extend(unit.configs);
     design.traits.extend(unit.traits);
@@ -266,6 +337,6 @@ fn merge(design: &mut File, unit: File) -> Result<()> {
 }
 
 /// The reset each module declares (`reset rst;`), by module name.
-fn declared_resets(envs: &HashMap<String, elab::env::Env>) -> HashMap<String, Option<String>> {
-    envs.iter().map(|(name, env)| (name.clone(), env.reset().map(|r| r.name.clone()))).collect()
+fn declared_resets(envs: &HashMap<String, elab::env::Env>) -> HashMap<String, Option<(String, bool)>> {
+    envs.iter().map(|(name, env)| (name.clone(), env.reset().map(|r| (r.name.clone(), r.low)))).collect()
 }

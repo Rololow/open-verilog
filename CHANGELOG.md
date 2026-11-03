@@ -5,6 +5,36 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 
 ## [Unreleased]
 
+### Added
+- lint `[sizing]`: a sum or a product shifted right, evaluated on fewer bits than it needs (`y = (a * b) >> 8` on 8 bits).
+- lint `[syntax]`: a select of bits of an expression in SystemVerilog source (`(a & b)[3:0]`), found before elaboration.
+- lint and compiler `[duplicate]`: a typedef defined in two files (the first definition is kept in the lint).
+- lint `[sign]`: a signed operand mixed with an unsigned one, and a signed operand zero-extended in an unsigned context.
+- `break;` in a `for` loop (SystemVerilog and `.ov`): the iterations after it do nothing. The lint reads the loops of plain
+  SystemVerilog that use it, so `controller.sv` of tiny-gpu is analysed.
+- lint: `// ovc: clock NAME` and `// ovc: reset NAME [low] [async]` in a plain SystemVerilog module declare its clock and
+  reset, so the reset and clock-domain checks apply to it. The source is not changed.
+- Forwarding is documented: `stage.x` reads the value that a later stage computes now, from the instruction in that stage.
+- lint `reset`: a declared reset that the module tests with the other polarity (`reset rst;` and `if (!rst)`).
+
+### Changed
+- **Breaking:** an output port that nothing drives is an error of the compiler, not only of the lint (its value is X in
+  simulation). Drive it, or `tie_off()` it. Nested channels are checked too.
+
+### Fixed
+- `stage.x` names the stage that defines `x`: `dec.v`, with `v` defined in a later stage, is an error. It was silently
+  resolved to that later `v`.
+- An error in a pipeline is reported at the module's own file (it was `<project>`).
+- A `localparam` in a generate loop is defined in each iteration: the lint saw its uses as unknown.
+- An input that a module reads and that nothing connects is reported, one that it never reads is not (the lint).
+- Unknown names say `unknown package 'X'`, `unknown monitor 'X'`, `unknown macro `X`, `unknown module 'X' in a test`, and
+  `unknown module 'X'` for a probe (they said `not found` or `is not defined`).
+- A `val` without a width is an inline value, not a signal: read from another stage (`ex.v` in `decode`, with `v` a
+  `val`), it is refused at the read, with the `logic [N-1:0] v = ...` that makes it a signal. It was reported in the
+  stage that reads the value, at no position.
+- The driver check of the lint follows bundle vectors (`m[i].aw.valid` drives `m_aw_valid`) and a bundle connected
+  whole to an instance (its outputs are driven by the instance). It reported ports that were driven.
+
 ## [0.1.9] - 2026-10-27
 
 ### Added
@@ -34,6 +64,8 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 - Part-selects of an expression are lowered to shifts (`4'ha` for `8'hA5[7:4]`, `1'(8'(a & b) >> i)` for `(a & b)[i]`).
 
 ### Fixed
+- A missing clock is reported at the module that contains the block (a `val` with `.delay()` passed to an instance was
+  reported at the instance's module).
 - A unary operator on a negative number is parenthesized (`|-9` is refused by SV, `|(-9)` is not).
 - `&&` and `||` with a constant operand give 0 or 1: `2 && x` is `x != 0` (it was `x`), unless `x` is one bit.
 - A signed operand of a sum or difference is widened to the sum's width (`acc + $signed(a) * $signed(b)` was extended with zeros by SV).

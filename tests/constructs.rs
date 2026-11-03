@@ -1,11 +1,10 @@
 //! Constructs that remove duplicated logic: match, in, select, for-in tables, struct views, .* connections (ported from
 //! the Python `tests/test_features.py`).
 
-fn sv_of(src: &str) -> String {
-    let out = ovc::compile_full(src, "t.ov").unwrap_or_else(|e| panic!("{}", e.render(src)));
-    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
-    out.sv
-}
+mod common;
+
+use common::sv_of;
+
 
 #[test]
 fn a_match_expression_is_a_chain_of_conditionals() {
@@ -65,4 +64,33 @@ fn a_star_connection_connects_the_ports_by_name() {
  always_ff @(posedge clk) { q <= d; } }
 module T(input clk, input logic [7:0] d, output logic [7:0] q) { R r(.*); }");
     assert!(sv.contains("R r (.clk(clk), .d(d), .q(q));"), "{sv}");
+}
+
+/// `break` in a `for` loop: the iterations after the one that breaks do nothing (the loop lowered to a flag, cleared
+/// before the loop and set by the `break`), so the first request wins, as in the SystemVerilog it stands for.
+#[test]
+fn a_break_stops_the_later_iterations() {
+    let sv = sv_of("module P(input clk, input rst, input logic [3:0] req, output logic [1:0] who) {
+  clock clk;
+  reset rst;
+  always_ff {
+    for (int j = 0; j < 4; j = j + 1) {
+      if (req[j]) {
+        who <= j;
+        break;
+      }
+    }
+  }
+}");
+    assert!(sv.contains("logic ov_brk_") && sv.contains("if (!ov_brk_") && sv.contains(" = 1;"), "{sv}");
+    assert!(!sv.contains("break"), "{sv}");
+}
+
+#[test]
+fn a_break_outside_a_loop_is_an_error() {
+    let msg = match ovc::compile("module P(input clk, input rst, output logic y) {\n  clock clk;\n  reset rst;\n  always_ff { break; }\n}", "t.ov") {
+        Ok(_) => panic!("a break outside a loop must be refused"),
+        Err(e) => e.message,
+    };
+    assert!(msg.contains("'break' is only allowed in a for loop"), "{msg}");
 }

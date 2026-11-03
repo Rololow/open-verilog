@@ -1,6 +1,6 @@
 //! Protocol monitors: a bundle's `monitor` module watches every slave port of that bundle (AXI4: burst rules,
 //! WLAST / RLAST against the lengths, responses without requests). Ported from the Python `tests/test_monitors.py`;
-//! the simulation runs only when Questa is on the PATH.
+//! the simulation runs only when Verilator is available.
 
 mod common;
 
@@ -28,7 +28,12 @@ fn options(asserts: bool) -> Options {
 
 #[test]
 fn a_monitor_on_each_slave_port() {
-    let src = format!("{SLAVE}module Two(input clk, input rst, slave Vec<Axi<32, 32, 4>, 2> v) {{ clock clk; reset rst; }}");
+    let src = format!(
+        "{SLAVE}module Two(input clk, input rst, slave Vec<Axi<32, 32, 4>, 2> v) {{ clock clk; reset rst;
+  for i in 0..2 {{ assign v[i].aw.ready = 1; assign v[i].w.ready = 1; assign v[i].ar.ready = 1;
+    assign v[i].b.valid = 0; assign v[i].b.data = 0; assign v[i].r.valid = 0; assign v[i].r.data = 0; }}
+}}"
+    );
     let sv = ovc::compile_with(&src, "t.ov", &options(true)).unwrap_or_else(|e| panic!("{}", e.message)).sv;
     // one monitor per port, named after it (the Python output named them `ov_mon_s`, `ov_mon_v_0`)
     assert!(sv.contains("AxiMonitor__32_32_4_8 s_mon0 (.clk(clk)") && sv.contains(".rst(rst))"), "{sv}");
@@ -62,8 +67,7 @@ test \"a faulty master\" for Sink {
 
 #[test]
 fn monitor_reports_a_faulty_master() {
-    if !common::on_path("vsim") {
-        eprintln!("skipped: Questa (vsim) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let src = format!("{SLAVE}{FAULTY_TEST}");

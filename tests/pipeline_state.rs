@@ -1,6 +1,10 @@
 //! Pipelines with state outside the stages (what a CPU needs), and the checks / test features added with the SoC.
 //! Ported from the Python `tests/test_pipeline_state.py`.
 
+mod common;
+
+use common::error_of as error;
+
 const CPU_LIKE: &str = "
 pipeline P(input clk, input rst, master Stream<logic [7:0]> o, input logic [4:0] rd_in, input logic [7:0] d,
            output logic [7:0] count) {
@@ -32,12 +36,6 @@ fn sv(src: &str) -> String {
     ovc::compile_full(src, "t.ov").unwrap_or_else(|e| panic!("{}", e.message)).sv
 }
 
-fn error(src: &str) -> String {
-    match ovc::compile(src, "t.ov") {
-        Ok(_) => panic!("the design must be refused:\n{src}"),
-        Err(e) => e.message,
-    }
-}
 
 #[test]
 fn state_outside_the_stages() {
@@ -52,10 +50,16 @@ fn state_outside_the_stages() {
 }
 
 #[test]
-#[ignore = "design: Rust keeps `stage.x` forwarding (a later stage's value read combinationally); Python refused it"]
 fn stage_reference_to_a_later_definition_is_refused() {
     let msg = error(&CPU_LIKE.replace("logic [7:0] a = rf[rd];", "logic [7:0] a = dec.v;"));
     assert!(msg.contains("'v' is not defined in stage 'dec' or before it"), "{msg}");
+}
+
+/// `ex.v` read in `dec` is forwarded: `v` of the instruction in `ex`, read combinationally in the same cycle.
+#[test]
+fn a_later_stage_value_named_by_its_stage_is_forwarded() {
+    let out = sv(&CPU_LIKE.replace("logic [7:0] a = rf[rd];", "logic [7:0] a = ex.v;"));
+    assert!(out.contains("assign a = v;"), "{out}");
 }
 
 #[test]
@@ -296,4 +300,21 @@ pipeline P(input clk, input rst, input logic [7:0] d, input logic h, output logi
     assert!(with_b.contains("assign q = h__s1 ? x__s1 : 0;"), "{with_b}");
     let live = sv(&src.replace("HERE", "pipe.h"));
     assert!(live.contains("assign q = h ? x__s1 : 0;") && !live.contains("h__s1") && !live.contains("$stable(h)"), "{live}");
+}
+
+/// A `val` without a width is not a signal: a later stage cannot read it, and the error says how to give it a width.
+#[test]
+fn a_width_less_val_of_another_stage_is_refused_with_its_fix() {
+    let src = "
+pipeline P(input clk, input rst, input logic [7:0] a, output logic [7:0] y, output logic valid_out) {
+  clock clk;
+  reset rst;
+
+  stage decode { val x = ex.v + a; }
+  stage ex     { val v = x + 1; }
+  stage out    { assign y = v; }
+}
+";
+    let msg = error(src);
+    assert!(msg.contains("'v' is not a signal of the pipeline") && msg.contains("logic [7:0] v = ..."), "{msg}");
 }

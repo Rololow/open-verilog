@@ -1,5 +1,5 @@
 //! Connections across the hierarchy: `a.b.sig` reads and `assign a.b.port = x` drives, through generated ports.
-//! Ported from the Python `tests/test_hier.py`; the simulation runs only when Questa is on the PATH.
+//! Ported from the Python `tests/test_hier.py`; the simulation runs only when Verilator is available.
 
 mod common;
 
@@ -145,8 +145,7 @@ module Top(input clk_a, input clk_b, input logic [7:0] d, output logic [7:0] q, 
 
 #[test]
 fn simulates() {
-    if !common::on_path("vsim") {
-        eprintln!("skipped: Questa (vsim) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let sv = sv_of(

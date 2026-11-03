@@ -1,5 +1,5 @@
 //! Part-selects of values that are not named signals, and definitions repeated across files (in .ov and in lint).
-//! Ported from the Python `tests/test_selects.py`; the simulation runs only when Questa is on the PATH.
+//! Ported from the Python `tests/test_selects.py`; the simulation runs only when Verilator is available.
 
 mod common;
 
@@ -61,7 +61,6 @@ fn expression_select_out_of_range() {
 }
 
 #[test]
-#[ignore = "not implemented: lint has no [syntax] check for a select of an expression in SV source"]
 fn sv_lint_reports_expression_selects_but_not_parameters() {
     let dir = scratch("selects-lint-params");
     let found = lint(&dir, &[(
@@ -91,7 +90,6 @@ fn definitions_repeated_in_one_file_are_errors() {
 }
 
 #[test]
-#[ignore = "not implemented: lint has no [duplicate] check for types defined in two files"]
 fn definitions_repeated_across_files_are_lint_findings() {
     let dir = scratch("selects-duplicates");
     let pkg = "package p; localparam int W = 4; endpackage\n";
@@ -114,8 +112,7 @@ fn definitions_repeated_across_files_are_lint_findings() {
 
 #[test]
 fn lowered_selects_simulate() {
-    if !common::on_path("vsim") {
-        eprintln!("skipped: Questa (vsim) is not on the PATH");
+    if !common::simulator_enabled() {
         return;
     }
     let src = format!(
@@ -177,7 +174,6 @@ module M(input logic [7:0] a, input logic [7:0] b, output logic [7:0] y) {
 }
 
 #[test]
-#[ignore = "not implemented: lint has no [sizing] category yet (the width finding is reported instead)"]
 fn sv_products_truncated_before_a_shift_are_reported() {
     let dir = scratch("selects-sizing");
     let found = lint(

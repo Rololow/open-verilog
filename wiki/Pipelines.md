@@ -151,6 +151,26 @@ value it means:
 Leaving it implicit is an error, because the two meanings are both common and picking the wrong one silently delays or
 skews the signal.
 
+### Forwarding
+
+A value defined in a later stage can be read by an earlier one, by naming the stage that defines it: `stage.x`. The
+earlier stage then gets the value that the later stage computes now, from the instruction in that later stage. That is
+the forwarding path of a processor: the instruction in `decode` takes the result of the instruction in `execute`.
+
+```systemverilog ov
+pipeline Bypass(input clk, input rst, input logic [7:0] a, output logic [7:0] y, output logic valid_out) {
+  clock clk;
+  reset rst;
+
+  stage decode { logic [7:0] x = ex.v + a; } // `ex.v`: forwarded from the instruction in execute
+  stage ex     { logic [7:0] v = (x + 1).wrap(); }
+  stage out    { assign y = v; }
+}
+```
+
+The name must be defined in the stage it is written with. `decode.v`, with `v` defined only in `ex`, is an error:
+`'v' is not defined in stage 'decode' or before it`.
+
 ### What this costs
 
 The rules above are the whole of the control model, and they are checked by the compiler. They are still a model to

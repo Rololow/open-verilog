@@ -19,6 +19,8 @@ jobs:
       - name: build
         run: cargo build --release
       - name: test
+        env:
+          OVC_SIM: "off"
         run: cargo test
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -32,3 +34,17 @@ jobs:
         run: cargo build --release
       - name: check the wiki pages (links and ov blocks)
         run: python3 scripts/check_wiki.py target/release/ovc
+
+  # The simulations with Verilator (an apt package on Ubuntu): with OVC_SIM=require a missing Verilator is a failure, so
+  # this job cannot pass without running them. The test job above leaves them out (OVC_SIM=off).
+  simulations:
+    runs-on: ubuntu-latest
+    env:
+      OVC_SIM: require
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install Verilator
+        run: sudo apt-get install -y verilator
+      - name: simulations
+        run: cargo test

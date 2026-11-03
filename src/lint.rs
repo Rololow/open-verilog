@@ -202,7 +202,7 @@ pub fn run(opts: &Options) -> Report {
             }
         };
         origins.0.insert(f.clone(), pre.origin.clone());
-        match crate::parser::parse_file(&pre_text, f) {
+        match crate::parser::parse_file_with_notes(&pre_text, &text, f) {
             Ok(file) => parsed.push(file),
             Err(e) => {
                 let (file, line) = origins.locate(&e.file, e.line);

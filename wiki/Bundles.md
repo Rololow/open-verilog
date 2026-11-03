@@ -113,7 +113,8 @@ The two versions were compared in simulation over 2000 cycles with a random `go`
 - A bundle can contain other bundles, and `input` flips the direction of a nested one. Example: an AXI read port is a
   request stream out and a response stream in.
 - `Vec<Stream<...>, N>` declares N bundles, for example the ports of N memories.
-- `tie_off(b)` gives the idle value to a master bundle that is not driven.
+- `tie_off(b)` gives the idle value to a master bundle that is not driven. A module output that nothing drives is an
+  error: drive it, or tie it off.
 - A bundle can name a protocol monitor (`monitor AxiMonitor<...>;`), instantiated on every slave port in simulation.
 - Bundles inside pipelines are not supported yet.
 
