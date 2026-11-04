@@ -6,6 +6,7 @@
 pub mod ast;
 pub mod checks;
 pub mod cover;
+pub mod diag;
 pub mod domains;
 pub mod elab;
 pub mod emit;

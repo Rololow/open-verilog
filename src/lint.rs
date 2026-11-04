@@ -9,10 +9,11 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::ast::File;
+use crate::diag::{Category, Level, Levels};
 use crate::preproc::Preprocessor;
 
 pub const USAGE: &str = "usage: ovc lint FILE.sv... [-f FILES.f] [+incdir+DIR] [-DNAME[=VALUE]] [--top NAME]
-                [--only CAT,...] [--ignore CAT,...] [--werror]";
+                [--only CAT,...] [--ignore CAT,...] [--allow CAT,...] [--warn CAT,...] [--deny CAT,...] [--werror]";
 
 /// The advice of a message for plain SystemVerilog: the remedies of `.ov` (`.wrap()`, `val`) are SV ones here.
 fn sv_advice(msg: &str) -> String {
@@ -29,44 +30,6 @@ fn sv_advice(msg: &str) -> String {
         }
     }
     m.replace("Declare it `input async` and synchronize it, or split it", "Synchronize it, or split it")
-}
-
-/// The categories of a finding, with the messages each one takes (the first category that matches is the one).
-fn category(msg: &str) -> &'static str {
-    let has = |s: &str| msg.contains(s);
-    if has("clock-domain crossing") {
-        "cdc"
-    } else if has("is signed but this expression is unsigned") || has("is extended from") {
-        "sign"
-    } else if has("depends combinationally on") && has(".ready") {
-        "handshake"
-    } else if msg.starts_with("reset '") {
-        "reset"
-    } else if has("not valid SystemVerilog") {
-        "syntax"
-    } else if has("is already defined at") {
-        "duplicate"
-    } else if has("needs") && has(" bits") {
-        "carry"
-    } else if ["carry is lost", "is evaluated on", "bits wide (an unsized literal", "before the shift"].iter().any(|s| has(s)) {
-        "sizing"
-    } else if has("bits but") || has("does not fit") || has("are dropped") || (has(" bits wide") && has("is ")) {
-        "width"
-    } else if has("latch") {
-        "latch"
-    } else if has("driven") || has("never driven") || has("several places") {
-        "driver"
-    } else if has("not connected") || (has("port '") && has(" of")) {
-        "connection"
-    } else if ["blocking assignment", "non-blocking", "initial value", "initializer", "reg '"].iter().any(|s| has(s)) {
-        "process"
-    } else if has("opposite way") || has("out of range") {
-        "slice"
-    } else if ["negative", "signed", "unsigned"].iter().any(|s| has(s)) {
-        "sign"
-    } else {
-        "other"
-    }
 }
 
 /// A finding, in the file and at the line it is written on.
@@ -89,6 +52,8 @@ pub struct Options {
     pub top: Option<String>,
     pub only: Vec<String>,
     pub ignore: Vec<String>,
+    /// The level of each category (`--allow`, `--warn`, `--deny`).
+    pub levels: Levels,
     pub werror: bool,
 }
 
@@ -229,7 +194,7 @@ pub fn run(opts: &Options) -> Report {
             }
             let mut push = |file: &str, line: usize, col: usize, message: String| {
                 let (file, line) = origins.locate(file, line);
-                report.findings.push(Finding { category: category(&message), file, line, col, message });
+                report.findings.push(Finding { category: Category::of_message(&message).as_str(), file, line, col, message });
             };
             for w in out.warnings {
                 if let Some((file, line, col, message)) = parse_warning(&w) {
@@ -267,6 +232,17 @@ pub fn main(args: &[String]) -> i32 {
             "--only" => opts.only = it.next().map(|s| s.split(',').map(str::to_string).collect()).unwrap_or_default(),
             "--ignore" => opts.ignore = it.next().map(|s| s.split(',').filter(|c| !c.is_empty()).map(str::to_string).collect()).unwrap_or_default(),
             "--werror" => opts.werror = true,
+            "--allow" | "--warn" | "--deny" => {
+                let level = match arg.as_str() {
+                    "--allow" => Level::Allow,
+                    "--warn" => Level::Warn,
+                    _ => Level::Deny,
+                };
+                if let Err(msg) = opts.levels.set_list(&it.next().cloned().unwrap_or_default(), level) {
+                    eprintln!("{msg}");
+                    return 2;
+                }
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return 0;
@@ -290,11 +266,14 @@ pub fn main(args: &[String]) -> i32 {
     let mut kept: Vec<Finding> = Vec::new();
     for mut f in report.findings {
         f.message = sv_advice(&f.message);
-        let wanted = (opts.only.is_empty() || opts.only.iter().any(|c| c == f.category)) && !opts.ignore.iter().any(|c| c == f.category);
+        let level = Category::from_name(f.category).map_or(Level::Warn, |c| opts.levels.get(c));
+        let wanted = level != Level::Allow && (opts.only.is_empty() || opts.only.iter().any(|c| c == f.category)) && !opts.ignore.iter().any(|c| c == f.category);
         if wanted && !silenced(&f, &mut sources) && !kept.iter().any(|k| k.message == f.message && k.file == f.file && k.line == f.line) {
             kept.push(f);
         }
     }
+    // a finding of a category at `deny` makes the run fail, as `--werror` does for every finding
+    let denied = kept.iter().any(|f| Category::from_name(f.category).is_some_and(|c| opts.levels.get(c) == Level::Deny));
     kept.sort_by(|a, b| (a.file.as_str(), a.line).cmp(&(b.file.as_str(), b.line)));
     for f in &kept {
         println!("[{}] {}:{}:{}: {}", f.category, f.file, f.line, f.col, f.message);
@@ -315,7 +294,7 @@ pub fn main(args: &[String]) -> i32 {
     };
     let skipped = if report.skipped.is_empty() { String::new() } else { format!("; {} part(s) not analyzed", report.skipped.len()) };
     println!("\n{} file(s): {summary}{skipped}", report.files);
-    if !report.skipped.is_empty() || (opts.werror && !kept.is_empty()) {
+    if !report.skipped.is_empty() || (opts.werror && !kept.is_empty()) || denied {
         1
     } else {
         0

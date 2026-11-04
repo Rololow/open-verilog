@@ -32,8 +32,10 @@ the compiler does not support is reported this way; nothing is dropped silently.
 
 ## Lint and coverage
 
-- `ovc lint FILE.sv... [-f FILES.f] [+incdir+DIR] [-DNAME[=VALUE]] [--top NAME] [--only CAT,...] [--ignore CAT,...] [--werror]`:
+- `ovc lint FILE.sv... [-f FILES.f] [+incdir+DIR] [-DNAME[=VALUE]] [--top NAME] [--only CAT,...] [--ignore CAT,...] [--allow CAT,...] [--warn CAT,...] [--deny CAT,...] [--werror]`:
   the checks of plain SystemVerilog files, without rewriting them (see [SystemVerilog in .ov, and lint](SystemVerilog-Compatibility)).
+  Each category is at `warn` by default. `--allow` drops its findings, `--deny` reports them and fails the run (the exit
+  code is 1); an unknown category name is an error.
 - `ovc design.ov --cover`: adds the coverage items of the case statements, as flags printed at the end of a simulation
   run with `OVC_COVER` defined.
 - `ovc cover LOG...`: the coverage report of those simulation logs. Items are covered when any run covered them; the

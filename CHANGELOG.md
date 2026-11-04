@@ -6,6 +6,9 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 ## [Unreleased]
 
 ### Added
+- `ovc lint --allow CAT,...`, `--warn CAT,...`, `--deny CAT,...`: the level of each category of finding. `deny` makes the
+  run fail; an unknown category name is refused with the list of the known ones. The categories are a typed enum
+  (`src/diag.rs`), not the text of the messages.
 - lint `[sizing]`: a sum or a product shifted right, evaluated on fewer bits than it needs (`y = (a * b) >> 8` on 8 bits).
 - lint `[syntax]`: a select of bits of an expression in SystemVerilog source (`(a & b)[3:0]`), found before elaboration.
 - lint and compiler `[duplicate]`: a typedef defined in two files (the first definition is kept in the lint).
