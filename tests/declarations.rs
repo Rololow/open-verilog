@@ -97,7 +97,7 @@ fn reset_directive_sets_polarity_and_async() {
 
 #[test]
 fn list_methods_on_arrays_and_vectors() {
-    let src = "module L(input logic [3:0] in [4], input logic [7:0] a, output logic [3:0] s, output logic [7:0] r, output logic [7:0] f) {
+    let src = "module L(input logic [3:0] in [4], input logic [7:0] a, output logic [5:0] s, output logic [7:0] r, output logic [15:0] f) {
   assign s = in.list().tree_reduce(+);
   assign r = a.reverse();
   assign f = a.fill(2);

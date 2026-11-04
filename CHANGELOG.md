@@ -26,13 +26,19 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 ### Changed
 - **Breaking:** a signal driven from two places (`driver` findings) is an error of the compiler, by default. Such a
   design is invalid SystemVerilog; `--warn driver` (or `[lints] driver = "warn"` in `ovc.toml`) restores the warning.
-  The `latch` and the `width` / `carry` / `sign` findings stay warnings by default for now.
+- **Breaking:** the bit-loss findings are errors of the compiler, by default: `width` (a value wider than its target),
+  `carry` (an operation that needs more bits than its target), `sizing` (a sum or product shifted right on too few
+  bits) and `sign` (a signed operand mixed with an unsigned one, where the bits change). Write the truncation on purpose
+  with `.wrap()`, or widen the target. `--warn width` (or `[lints] width = "warn"`) restores the warning. The `latch`
+  findings stay warnings by default.
 - **Breaking:** an output port that nothing drives is an error of the compiler, not only of the lint (its value is X in
   simulation). Drive it, or `tie_off()` it. Nested channels are checked too.
 
 ### Fixed
 - A `.wrap()` written in a generate loop is honoured by the width and carry checks: the copies of the signal are named
   with the loop index (`penalty_0`), and they were not matched with the source name (`penalty`).
+- The `sign` check honours a `.wrap()`: a signed operand that is as wide as the truncated target does not change its
+  bits, so the sum is not reported.
 - `stage.x` names the stage that defines `x`: `dec.v`, with `v` defined in a later stage, is an error. It was silently
   resolved to that later `v`.
 - An error in a pipeline is reported at the module's own file (it was `<project>`).

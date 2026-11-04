@@ -34,7 +34,8 @@ the compiler does not support is reported this way; nothing is dropped silently.
 
 - `ovc lint FILE.sv... [-f FILES.f] [+incdir+DIR] [-DNAME[=VALUE]] [--top NAME] [--only CAT,...] [--ignore CAT,...] [--allow CAT,...] [--warn CAT,...] [--deny CAT,...] [--werror]`:
   the checks of plain SystemVerilog files, without rewriting them (see [SystemVerilog in .ov, and lint](SystemVerilog-Compatibility)).
-  The categories are at `warn` by default, except `driver` (a signal driven from two places), which is `deny`.
+  The categories are at `warn` by default, except `driver` (a signal driven from two places), and the bit losses `width`,
+  `carry`, `sizing` and `sign`, which are `deny`: a truncation written on purpose is `.wrap()`.
   `--allow` drops its findings, `--deny` reports them and fails the run (the exit code is 1); an unknown category name
   is an error.
 - The same levels can be set for a project in `ovc.toml`, in the working directory, with a `[lints]` table:

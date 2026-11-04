@@ -159,7 +159,7 @@ bundle AxiRd<int AW = 32, int DW = 32, int IW = 4> {
   output Stream<AxiAddr<AW, IW>> ar;
   input Stream<logic [DW-1:0]> r;
 }
-module Src(input clk, input rst, master AxiRd<40, 64, 2> m, output logic [7:0] s) {
+module Src(input clk, input rst, master AxiRd<40, 64, 2> m, output logic [8:0] s) {
   clock clk;
   reset rst;
 

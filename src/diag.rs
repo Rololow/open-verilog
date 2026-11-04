@@ -141,12 +141,18 @@ pub enum Level {
 pub struct Levels(HashMap<Category, Level>);
 
 impl Default for Levels {
-    /// The categories that are errors by default. `driver` is: the audit of the accelerator corpus found no finding of
-    /// it, and a signal driven from two places is never wanted. `latch` is not yet: it flags an exhaustive chain of
-    /// `if (tr == k)` on a one-bit `tr` (no latch, but not provable here). Width, carry and sign stay at `warn` until
-    /// their findings on the corpus are settled.
+    /// The categories that are errors by default. `driver` is: a signal driven from two places is never wanted. The
+    /// bit-loss categories (`width`, `carry`, `sizing`, `sign`) are too: the accelerator corpus was audited, and each of
+    /// its findings is either a `.wrap()` (honoured now) or a sign that does not change the bits kept. `latch` stays at
+    /// `warn`: it flags an exhaustive chain of `if (tr == k)` on a one-bit `tr` (no latch, but not provable here).
     fn default() -> Self {
-        Levels(HashMap::from([(Category::Driver, Level::Deny)]))
+        Levels(HashMap::from([
+            (Category::Driver, Level::Deny),
+            (Category::Width, Level::Deny),
+            (Category::Carry, Level::Deny),
+            (Category::Sizing, Level::Deny),
+            (Category::Sign, Level::Deny),
+        ]))
     }
 }
 
@@ -232,23 +238,24 @@ mod tests {
     }
 
     #[test]
-    fn levels_default_to_warn_and_take_a_list() {
+    fn levels_default_to_deny_for_the_bit_losses_and_take_a_list() {
         let mut levels = Levels::default();
-        assert_eq!(levels.get(Category::Width), Level::Warn);
-        levels.set_list("width,cdc", Level::Deny).unwrap();
-        levels.set_list("latch", Level::Allow).unwrap();
         assert_eq!(levels.get(Category::Width), Level::Deny);
-        assert_eq!(levels.get(Category::Cdc), Level::Deny);
+        assert_eq!(levels.get(Category::Latch), Level::Warn);
+        levels.set_list("width,cdc", Level::Warn).unwrap();
+        levels.set_list("latch", Level::Allow).unwrap();
+        assert_eq!(levels.get(Category::Width), Level::Warn);
+        assert_eq!(levels.get(Category::Cdc), Level::Warn);
         assert_eq!(levels.get(Category::Latch), Level::Allow);
         assert_eq!(levels.get(Category::Driver), Level::Deny);
     }
 
     #[test]
     fn a_manifest_sets_the_levels_of_its_lints_table() {
-        let levels = Levels::from_manifest("name = \"top\"\n\n[lints]\nwidth = \"deny\" # the carries\ncdc = \"allow\"\n").unwrap();
-        assert_eq!(levels.get(Category::Width), Level::Deny);
+        let levels = Levels::from_manifest("name = \"top\"\n\n[lints]\nwidth = \"warn\" # the carries\ncdc = \"allow\"\n").unwrap();
+        assert_eq!(levels.get(Category::Width), Level::Warn);
         assert_eq!(levels.get(Category::Cdc), Level::Allow);
-        assert_eq!(levels.get(Category::Carry), Level::Warn);
+        assert_eq!(levels.get(Category::Carry), Level::Deny);
     }
 
     #[test]

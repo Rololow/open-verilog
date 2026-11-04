@@ -80,7 +80,7 @@ module M(input clk, input rst, slave Pair p) {
 
 #[test]
 fn a_procedural_function_is_expanded_at_its_calls() {
-    let out = sv("module M(input clk, input rst, input logic go, output logic [3:0] q) {
+    let out = sv("module M(input clk, input rst, input logic go, output logic [4:0] q) {
   clock clk;
   reset rst;
 
@@ -124,7 +124,7 @@ fn a_part_of_an_expression_is_shifted_and_cast() {
 
 #[test]
 fn loop_locals_are_named_per_iteration() {
-    let out = sv("module M(input logic [3:0] a, output logic [3:0] y [2]) { for i in 0..2 { wire [3:0] t = a + i; assign y[i] = t; } }");
+    let out = sv("module M(input logic [3:0] a, output logic [4:0] y [2]) { for i in 0..2 { wire [4:0] t = a + i; assign y[i] = t; } }");
     assert!(out.contains("t_0"), "{out}");
     assert!(out.contains("t_1"));
 }

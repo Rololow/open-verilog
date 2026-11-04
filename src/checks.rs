@@ -26,7 +26,7 @@ pub fn check(modules: &[Module], envs: &HashMap<String, Env>, wrapped: &Wrapped)
     for m in modules {
         let env = envs.get(&m.name);
         check_widths(m, env, &by_name, wrapped, &mut out);
-        check_signs(m, env, &mut out);
+        check_signs(m, env, wrapped, &mut out);
         check_sizes(m, env, &mut out);
         check_latches(m, env, &mut out);
         let mut undriven = Vec::new();
@@ -436,13 +436,33 @@ fn signed_leaves(e: &Expr, env: &Env, out: &mut Vec<(String, u32)>) {
 
 /// A mixed operation: a signed operand and an unsigned one. SV makes the whole operation unsigned, so the signed
 /// operand is extended with zeros to the width of the operation, and the result is not the signed one.
-fn sign_expr(m: &Module, env: &Env, e: &Expr, pos: Pos, out: &mut Vec<String>) {
+/// The operators whose bits below the width of the target do not depend on the bits above the operands' width: a sum,
+/// a product or a bitwise operation, truncated to the target.
+fn is_modular_op(op: &str) -> bool {
+    matches!(op, "+" | "-" | "*" | "&" | "|" | "^")
+}
+
+/// `modular` is the width of the target when the value is truncated to it with `.wrap()`. Then the bits of the target do
+/// not depend on the signedness of an operand that is as wide as the target: it is not extended, and the extension of
+/// the other operands (with zeros, unsigned) is the one the sum means. A signed operand narrower than the target would
+/// be extended with zeros, so the operation is still reported.
+fn agree_below_target(op: &str, a: &Expr, b: &Expr, modular: Option<u32>, env: &Env) -> bool {
+    let Some(w) = modular.filter(|_| is_modular_op(op)) else { return false };
+    [a, b].into_iter().all(|x| match signed_of(x, env) {
+        Some(false) => true,
+        Some(true) => width_of(x, env).is_some_and(|x| x.width >= w),
+        None => false,
+    })
+}
+
+fn sign_expr(m: &Module, env: &Env, e: &Expr, modular: Option<u32>, pos: Pos, out: &mut Vec<String>) {
     match e {
         Expr::Binary(op, a, b, _) => {
             let mixed_op = matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "==" | "!=" | "<" | "<=" | ">" | ">=");
             // a decimal literal is signed and does no harm beside an unsigned value (`count + 1`)
             let neutral = |x: &Expr| matches!(x, Expr::Num(t) if !t.contains('\''));
-            if mixed_op && !neutral(a) && !neutral(b) {
+            let kept = agree_below_target(op, a, b, modular, env);
+            if mixed_op && !neutral(a) && !neutral(b) && !kept {
                 if let (Some(sa), Some(sb)) = (signed_of(a, env), signed_of(b, env)) {
                     if sa != sb {
                         let mut leaves = Vec::new();
@@ -459,42 +479,47 @@ fn sign_expr(m: &Module, env: &Env, e: &Expr, pos: Pos, out: &mut Vec<String>) {
                     }
                 }
             }
-            sign_expr(m, env, a, pos, out);
-            sign_expr(m, env, b, pos, out);
+            let inner = if is_modular_op(op) { modular } else { None };
+            sign_expr(m, env, a, inner, pos, out);
+            sign_expr(m, env, b, inner, pos, out);
         }
-        Expr::Unary(_, a) | Expr::Cast(_, a) => sign_expr(m, env, a, pos, out),
+        Expr::Unary(op, a) => sign_expr(m, env, a, if matches!(op.as_str(), "-" | "~") { modular } else { None }, pos, out),
+        Expr::Cast(_, a) => sign_expr(m, env, a, None, pos, out),
         Expr::Ternary(c, a, b) => {
-            sign_expr(m, env, c, pos, out);
-            sign_expr(m, env, a, pos, out);
-            sign_expr(m, env, b, pos, out);
+            sign_expr(m, env, c, None, pos, out);
+            sign_expr(m, env, a, modular, pos, out);
+            sign_expr(m, env, b, modular, pos, out);
         }
-        Expr::Call(_, args) => args.iter().for_each(|x| sign_expr(m, env, x, pos, out)),
+        Expr::Call(_, args) => args.iter().for_each(|x| sign_expr(m, env, x, None, pos, out)),
         Expr::Index(a, i) => {
-            sign_expr(m, env, a, pos, out);
-            sign_expr(m, env, i, pos, out);
+            sign_expr(m, env, a, None, pos, out);
+            sign_expr(m, env, i, None, pos, out);
         }
-        Expr::Slice(a, ..) => sign_expr(m, env, a, pos, out),
-        Expr::Concat(parts) | Expr::Repl(_, parts) => parts.iter().for_each(|x| sign_expr(m, env, x, pos, out)),
+        Expr::Slice(a, ..) => sign_expr(m, env, a, None, pos, out),
+        Expr::Concat(parts) | Expr::Repl(_, parts) => parts.iter().for_each(|x| sign_expr(m, env, x, None, pos, out)),
         _ => {}
     }
 }
 
-/// The signedness of the operations: a signed operand mixed with an unsigned one (see `sign_expr`).
-fn check_signs(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
+/// The signedness of the operations: a signed operand mixed with an unsigned one (see `sign_expr`). A value written with
+/// `.wrap()` is truncated to its target, so the operations that agree below that width are not reported.
+fn check_signs(m: &Module, env: Option<&Env>, wrapped: &Wrapped, out: &mut Vec<String>) {
     let Some(env) = env else { return };
+    let key = base_module(&m.name);
+    let modular = |lhs: &Expr| if target_wrapped(&key, lhs, wrapped) { sized(lhs, env) } else { None };
     for it in &m.items {
         match &it.kind {
-            ItemKind::ContAssign { rhs, .. } => sign_expr(m, env, rhs, it.pos, out),
+            ItemKind::ContAssign { lhs, rhs } => sign_expr(m, env, rhs, modular(lhs), it.pos, out),
             ItemKind::Decl(d) => {
                 for x in &d.decls {
                     if let Some(init) = &x.init {
-                        sign_expr(m, env, init, it.pos, out);
+                        sign_expr(m, env, init, modular(&Expr::Ident(x.name.clone(), (0, 0))), it.pos, out);
                     }
                 }
             }
             ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
-                for (_, rhs, _, pos) in assignments(body) {
-                    sign_expr(m, env, rhs, pos, out);
+                for (lhs, rhs, _, pos) in assignments(body) {
+                    sign_expr(m, env, rhs, modular(lhs), pos, out);
                 }
             }
             _ => {}
