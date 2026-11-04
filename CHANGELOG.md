@@ -10,6 +10,8 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
   compiler. At `deny` a finding fails the lint, or the compilation (it is an error, at its position); `// ovc: ignore`
   still silences it. An unknown category name is refused with the list of the known ones. The categories are a typed
   enum (`src/diag.rs`), not the text of the messages. Without `--deny` the compilation is unchanged.
+- `ovc.toml` in the working directory: a `[lints]` table sets the level of each category for `ovc build`, `ovc design.ov`
+  and `ovc lint` (`width = "deny"`). The command line overrides it.
 - lint `[sizing]`: a sum or a product shifted right, evaluated on fewer bits than it needs (`y = (a * b) >> 8` on 8 bits).
 - lint `[syntax]`: a select of bits of an expression in SystemVerilog source (`(a & b)[3:0]`), found before elaboration.
 - lint and compiler `[duplicate]`: a typedef defined in two files (the first definition is kept in the lint).

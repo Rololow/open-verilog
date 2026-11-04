@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use crate::ast::Expr;
+
 /// A family of checks. The names (`as_str`) are stable: they are part of the command line and of the source comments.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Category {
@@ -114,6 +116,15 @@ impl Category {
     }
 }
 
+/// The levels of the project: the `[lints]` of `ovc.toml` in the working directory, or none when there is no such file.
+pub fn project_levels() -> Result<Levels, String> {
+    match std::fs::read_to_string("ovc.toml") {
+        Ok(text) => Levels::from_manifest(&text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Levels::default()),
+        Err(e) => Err(format!("ovc.toml: {e}")),
+    }
+}
+
 /// What a finding of a category does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -143,6 +154,36 @@ impl Levels {
         self.0.values().any(|l| *l == Level::Deny)
     }
 
+    /// Copies the levels of `other` over these: a category that `other` sets takes its level there.
+    pub fn extend(&mut self, other: &Levels) {
+        for (cat, level) in &other.0 {
+            self.0.insert(*cat, *level);
+        }
+    }
+
+    /// The levels of a manifest (`ovc.toml`): a `[lints]` table, `category = "allow" | "warn" | "deny"`.
+    pub fn from_manifest(text: &str) -> Result<Levels, String> {
+        let mut levels = Levels::default();
+        for (key, value) in crate::toml::parse(text).map_err(|e| format!("ovc.toml: {e}"))? {
+            if key != "lints" {
+                continue;
+            }
+            let Expr::Pattern(entries) = value else { return Err("ovc.toml: [lints] must be a table".into()) };
+            for entry in entries {
+                let Expr::Keyed(cat, value) = entry else { continue };
+                let Expr::Num(text) = *value else { return Err(format!("ovc.toml: [lints] {cat}: the level must be a string")) };
+                let level = match text.trim_matches('"') {
+                    "allow" => Level::Allow,
+                    "warn" => Level::Warn,
+                    "deny" => Level::Deny,
+                    other => return Err(format!("ovc.toml: [lints] {cat}: unknown level '{other}' (allow, warn or deny)")),
+                };
+                levels.set_list(&cat, level).map_err(|e| format!("ovc.toml: [lints]: {e}"))?;
+            }
+        }
+        Ok(levels)
+    }
+
     /// Sets the level of each category of a comma-separated list (`cdc,width`). An unknown name is an error, which
     /// names the known ones.
     pub fn set_list(&mut self, list: &str, level: Level) -> Result<(), String> {
@@ -151,7 +192,7 @@ impl Levels {
                 Some(cat) => self.set(cat, level),
                 None => {
                     let known: Vec<&str> = ALL.iter().map(|c| c.as_str()).collect();
-                    return Err(format!("ovc lint: unknown category '{name}' (the categories are: {})", known.join(", ")));
+                    return Err(format!("unknown category '{name}' (the categories are: {})", known.join(", ")));
                 }
             }
         }
@@ -190,6 +231,31 @@ mod tests {
         assert_eq!(levels.get(Category::Cdc), Level::Deny);
         assert_eq!(levels.get(Category::Latch), Level::Allow);
         assert_eq!(levels.get(Category::Driver), Level::Warn);
+    }
+
+    #[test]
+    fn a_manifest_sets_the_levels_of_its_lints_table() {
+        let levels = Levels::from_manifest("name = \"top\"\n\n[lints]\nwidth = \"deny\" # the carries\ncdc = \"allow\"\n").unwrap();
+        assert_eq!(levels.get(Category::Width), Level::Deny);
+        assert_eq!(levels.get(Category::Cdc), Level::Allow);
+        assert_eq!(levels.get(Category::Latch), Level::Warn);
+    }
+
+    #[test]
+    fn a_manifest_refuses_an_unknown_category_or_level() {
+        let err = Levels::from_manifest("[lints]\nwidht = \"deny\"\n").unwrap_err();
+        assert!(err.contains("unknown category 'widht'"), "{err}");
+        let err = Levels::from_manifest("[lints]\nwidth = \"error\"\n").unwrap_err();
+        assert!(err.contains("unknown level 'error'"), "{err}");
+    }
+
+    #[test]
+    fn explicit_levels_override_the_manifest() {
+        let mut levels = Levels::from_manifest("[lints]\nwidth = \"deny\"\n").unwrap();
+        let mut cli = Levels::default();
+        cli.set(Category::Width, Level::Allow);
+        levels.extend(&cli);
+        assert_eq!(levels.get(Category::Width), Level::Allow);
     }
 
     #[test]

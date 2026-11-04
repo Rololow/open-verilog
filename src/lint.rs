@@ -257,6 +257,17 @@ pub fn main(args: &[String]) -> i32 {
         }
     }
     opts.files.retain(|f| matches!(Path::new(f).extension().and_then(|e| e.to_str()), Some("sv" | "v" | "svh" | "vh" | "ov")));
+    // the levels of `ovc.toml` are overridden by the ones given on the command line
+    match crate::diag::project_levels() {
+        Ok(mut levels) => {
+            levels.extend(&opts.levels);
+            opts.levels = levels;
+        }
+        Err(msg) => {
+            eprintln!("{msg}");
+            return 2;
+        }
+    }
     if opts.files.is_empty() {
         eprintln!("ovc lint: no .sv / .v file given\n{USAGE}");
         return 2;

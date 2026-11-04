@@ -36,6 +36,8 @@ the compiler does not support is reported this way; nothing is dropped silently.
   the checks of plain SystemVerilog files, without rewriting them (see [SystemVerilog in .ov, and lint](SystemVerilog-Compatibility)).
   Each category is at `warn` by default. `--allow` drops its findings, `--deny` reports them and fails the run (the exit
   code is 1); an unknown category name is an error.
+- The same levels can be set for a project in `ovc.toml`, in the working directory, with a `[lints]` table:
+  `width = "deny"`. The command line overrides it. It applies to `ovc build`, `ovc design.ov` and `ovc lint`.
 - `ovc design.ov --cover`: adds the coverage items of the case statements, as flags printed at the end of a simulation
   run with `OVC_COVER` defined.
 - `ovc cover LOG...`: the coverage report of those simulation logs. Items are covered when any run covered them; the

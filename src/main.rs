@@ -206,7 +206,10 @@ fn run(args: Args) -> Result<(), String> {
         return Err("no .ov file found".into());
     }
     let units = parse_units(&paths)?;
-    let options = ovc::Options { asserts: args.asserts, top: args.top.clone(), cover: args.cover, levels: args.levels.clone() };
+    // the levels of `ovc.toml` are overridden by the ones given on the command line
+    let mut levels = ovc::diag::project_levels()?;
+    levels.extend(&args.levels);
+    let options = ovc::Options { asserts: args.asserts, top: args.top.clone(), cover: args.cover, levels };
     let sources: Vec<(String, String)> = units.iter().map(|(n, s, _)| (n.clone(), s.clone())).collect();
     let parsed: Vec<File> = units.into_iter().map(|(_, _, f)| f).collect();
     let compiled = match ovc::compile_parsed(parsed, &options) {
