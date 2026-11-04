@@ -19,7 +19,7 @@ module Top<config C : Cfg = Cfg>(input logic a_irq, input logic b_irq, output lo
 ";
 
 fn compiled(src: &str, top: &str) -> ovc::Compiled {
-    let options = Options { asserts: true, top: Some(top.to_string()), cover: false };
+    let options = Options { asserts: true, top: Some(top.to_string()), cover: false, ..Default::default() };
     ovc::compile_with(src, "t.ov", &options).unwrap_or_else(|e| panic!("{}", e.message))
 }
 

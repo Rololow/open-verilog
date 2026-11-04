@@ -22,7 +22,7 @@ module Sink(input clk, input rst, slave Axi<32, 32, 4> s, input logic rv, input 
 ";
 
 fn options(asserts: bool) -> Options {
-    Options { asserts, top: None, cover: false }
+    Options { asserts, top: None, cover: false, ..Default::default() }
 }
 
 #[test]

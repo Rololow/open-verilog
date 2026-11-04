@@ -129,11 +129,11 @@ fn control_must_be_inside_a_stage() {
 
 #[test]
 fn checks_are_emitted_unless_disabled() {
-    let on = ovc::compile_with(MAC, "mac.ov", &ovc::Options { asserts: true, top: None, cover: false }).unwrap().sv;
+    let on = ovc::compile_with(MAC, "mac.ov", &ovc::Options { asserts: true, top: None, cover: false, ..Default::default() }).unwrap().sv;
     assert!(on.contains("`ifndef SYNTHESIS"));
     assert!(on.contains("ov_a_advance_add: assert property (@(posedge clk) disable iff (rst) ov_valid_mul |=> ov_valid_add)"));
     assert!(on.contains("ov_a_valid_known: assert property"));
-    let off = ovc::compile_with(MAC, "mac.ov", &ovc::Options { asserts: false, top: None, cover: false }).unwrap().sv;
+    let off = ovc::compile_with(MAC, "mac.ov", &ovc::Options { asserts: false, top: None, cover: false, ..Default::default() }).unwrap().sv;
     assert!(!off.contains("ov_a_"));
     assert!(!off.contains("`ifndef"));
 }

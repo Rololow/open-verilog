@@ -208,7 +208,7 @@ fn an_exported_struct_has_its_memory_layout_in_the_c_header() {
     let src = "export struct DmaDesc \"DMA descriptor\" { logic [31:0] src \"source address\"; logic [31:0] len; }
 module M(input logic clk) {}";
     let file = ovc::parser::parse_file(src, "d.ov").unwrap();
-    let compiled = ovc::compile_parsed(vec![file], &ovc::Options { asserts: true, top: None, cover: false }).unwrap();
+    let compiled = ovc::compile_parsed(vec![file], &ovc::Options { asserts: true, top: None, cover: false, ..Default::default() }).unwrap();
     let h = ovc::outputs::record_c_header(&compiled.records);
     assert!(h.contains("#define DMA_DESC_SIZE 8u"), "{h}");
     assert!(h.contains("#define DMA_DESC_LEN_OFFSET 4u"), "{h}");
@@ -220,7 +220,7 @@ fn an_isa_has_its_opcodes_in_the_sv_package() {
     let src = "isa Mini \"tiny\" : opcode 4 { NOP = 1 \"no operation\" {} LD = 5 { rd : 5; imm : 16; } }
 module M(input logic clk) {}";
     let file = ovc::parser::parse_file(src, "i.ov").unwrap();
-    let compiled = ovc::compile_parsed(vec![file], &ovc::Options { asserts: true, top: None, cover: false }).unwrap();
+    let compiled = ovc::compile_parsed(vec![file], &ovc::Options { asserts: true, top: None, cover: false, ..Default::default() }).unwrap();
     let pkg = ovc::outputs::isa_sv_package(&compiled.isas);
     assert!(pkg.contains("  localparam int LD_OPCODE = 5;"), "{pkg}");
     assert!(pkg.contains("  localparam int LD_RD_S = 4;"), "{pkg}");
@@ -335,7 +335,7 @@ module D(input clk, input logic [1:0] s, input St st, output logic y) {
   }
 }
 ";
-    let options = ovc::Options { asserts: true, top: None, cover: true };
+    let options = ovc::Options { asserts: true, top: None, cover: true, ..Default::default() };
     let sv = ovc::compile_with(src, "d.ov", &options).unwrap_or_else(|e| panic!("{}", e.message)).sv;
     assert!(sv.contains("`ifdef OVC_COVER"), "{sv}");
     assert!(sv.contains("if (s == 0) ov_cov_0 = 1'b1;"), "{sv}");

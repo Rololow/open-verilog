@@ -17,7 +17,7 @@ module Mid(input clk, input logic [7:0] d, output logic [7:0] q) { Leaf leaf(.cl
 ";
 
 fn compile(src: &str, top: Option<&str>) -> Result<ovc::Compiled, ovc::error::Error> {
-    let options = Options { asserts: true, top: top.map(String::from), cover: false };
+    let options = Options { asserts: true, top: top.map(String::from), cover: false, ..Default::default() };
     ovc::compile_with(src, "t.ov", &options)
 }
 

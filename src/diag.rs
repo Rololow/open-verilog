@@ -138,6 +138,11 @@ impl Levels {
         self.0.get(&cat).copied().unwrap_or(Level::Warn)
     }
 
+    /// Whether some category is at `deny`: the compiler then runs the checks, and their `deny` findings are errors.
+    pub fn any_deny(&self) -> bool {
+        self.0.values().any(|l| *l == Level::Deny)
+    }
+
     /// Sets the level of each category of a comma-separated list (`cdc,width`). An unknown name is an error, which
     /// names the known ones.
     pub fn set_list(&mut self, list: &str, level: Level) -> Result<(), String> {

@@ -5,7 +5,7 @@
 use ovc::Options;
 
 fn compile_top(src: &str, top: &str) -> Result<String, ovc::error::Error> {
-    let options = Options { asserts: true, top: Some(top.to_string()), cover: false };
+    let options = Options { asserts: true, top: Some(top.to_string()), cover: false, ..Default::default() };
     ovc::compile_with(src, "t.ov", &options).map(|c| c.sv)
 }
 

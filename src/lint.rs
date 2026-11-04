@@ -125,7 +125,7 @@ impl Origins {
 }
 
 /// Splits a warning of the compiler, `file:line:col: warning: message`, into its parts.
-fn parse_warning(text: &str) -> Option<(String, usize, usize, String)> {
+pub(crate) fn parse_warning(text: &str) -> Option<(String, usize, usize, String)> {
     let (head, message) = text.split_once(": warning: ")?;
     let mut parts = head.rsplitn(3, ':');
     let col = parts.next()?.parse().ok()?;
@@ -210,7 +210,7 @@ pub fn run(opts: &Options) -> Report {
 }
 
 /// Whether the line of a finding says `// ovc: ignore <category>` (or `all`).
-fn silenced(f: &Finding, sources: &mut HashMap<String, Vec<String>>) -> bool {
+pub(crate) fn silenced(f: &Finding, sources: &mut HashMap<String, Vec<String>>) -> bool {
     let lines = sources.entry(f.file.clone()).or_insert_with(|| {
         std::fs::read_to_string(&f.file).map(|t| t.lines().map(str::to_string).collect()).unwrap_or_default()
     });

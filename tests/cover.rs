@@ -15,7 +15,7 @@ module M(input clk, input rst, input logic go, input logic [1:0] op, output logi
 }";
 
 fn with_cover(src: &str, cover: bool) -> String {
-    let options = Options { asserts: true, top: None, cover };
+    let options = Options { asserts: true, top: None, cover, ..Default::default() };
     ovc::compile_with(src, "t.ov", &options).unwrap_or_else(|e| panic!("{}", e.message)).sv
 }
 

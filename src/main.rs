@@ -40,6 +40,8 @@ struct Args {
     filelist: Option<String>,
     /// `--in-place`: the output of each source goes next to it, and `ovc_files.f` lists them.
     in_place: bool,
+    /// `--allow` / `--warn` / `--deny CAT,...`: the level of each category of check.
+    levels: ovc::diag::Levels,
 }
 
 fn parse_args(argv: Vec<String>) -> Result<Args, String> {
@@ -65,6 +67,9 @@ fn parse_args(argv: Vec<String>) -> Result<Args, String> {
             "--werror" => args.werror = true,
             "--cover" => args.cover = true,
             "--no-asserts" => args.asserts = false,
+            "--allow" => args.levels.set_list(&value("--allow")?, ovc::diag::Level::Allow)?,
+            "--warn" => args.levels.set_list(&value("--warn")?, ovc::diag::Level::Warn)?,
+            "--deny" => args.levels.set_list(&value("--deny")?, ovc::diag::Level::Deny)?,
             "--top" => args.top = Some(it.next().ok_or("--top needs a module with its arguments")?),
             "-h" | "--help" => return Err(String::new()),
             other if other.starts_with('-') => return Err(format!("unknown option '{other}'")),
@@ -201,7 +206,7 @@ fn run(args: Args) -> Result<(), String> {
         return Err("no .ov file found".into());
     }
     let units = parse_units(&paths)?;
-    let options = ovc::Options { asserts: args.asserts, top: args.top.clone(), cover: args.cover };
+    let options = ovc::Options { asserts: args.asserts, top: args.top.clone(), cover: args.cover, levels: args.levels.clone() };
     let sources: Vec<(String, String)> = units.iter().map(|(n, s, _)| (n.clone(), s.clone())).collect();
     let parsed: Vec<File> = units.into_iter().map(|(_, _, f)| f).collect();
     let compiled = match ovc::compile_parsed(parsed, &options) {

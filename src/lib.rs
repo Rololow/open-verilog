@@ -26,6 +26,7 @@ pub mod toml;
 
 use std::collections::{HashMap, HashSet};
 use ast::File;
+use diag::{Category, Level, Levels};
 use error::{Error, Result};
 
 /// The output of a project: the SystemVerilog of each origin file, the whole design, and the side outputs.
@@ -63,11 +64,14 @@ pub struct Options {
     pub top: Option<String>,
     /// Coverage items of the case statements (`--cover`).
     pub cover: bool,
+    /// The level of each category of check (`--allow`, `--warn`, `--deny`). Only a category at `deny` changes the
+    /// compilation: its findings are errors. At `warn` the findings are for `ovc lint`.
+    pub levels: Levels,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { asserts: true, top: None, cover: false }
+        Options { asserts: true, top: None, cover: false, levels: Levels::default() }
     }
 }
 
@@ -250,6 +254,20 @@ pub fn compile_parsed(parsed: Vec<File>, options: &Options) -> Result<Compiled> 
     }
     // the clock domains are checked on the design as elaborated and connected: children before parents
     warnings.extend(domains::check(&modules, &handshakes, &declared_resets(&envs))?);
+    // the findings of the checks at `deny` are errors (the checks run only when some category is at `deny`)
+    if options.levels.any_deny() {
+        let mut found = checks::check(&modules, &envs, &checks::wrapped_in(&source));
+        found.extend(warnings.iter().cloned());
+        let mut sources = HashMap::new();
+        for w in &found {
+            let Some((file, line, col, message)) = lint::parse_warning(w) else { continue };
+            let cat = Category::of_message(&message);
+            let finding = lint::Finding { category: cat.as_str(), file: file.clone(), line, col, message: message.clone() };
+            if options.levels.get(cat) == Level::Deny && !lint::silenced(&finding, &mut sources) {
+                return Err(Error::new(message, &file, line, col));
+            }
+        }
+    }
     let tests_sv = if tests.is_empty() { None } else { Some(testgen::generate(&tests, &modules, &envs, &procs, "<project>")?) };
     let probes_sv = if probes.is_empty() { None } else { Some(probes::generate(&probes, &modules, &envs, "<project>")?) };
     let packages: String = packages.iter().map(|(_, text)| text.as_str()).collect();
