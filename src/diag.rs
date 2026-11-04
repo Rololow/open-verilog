@@ -137,8 +137,18 @@ pub enum Level {
 }
 
 /// The level of each category. A category without a setting is at `warn`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Levels(HashMap<Category, Level>);
+
+impl Default for Levels {
+    /// The categories that are errors by default. `driver` is: the audit of the accelerator corpus found no finding of
+    /// it, and a signal driven from two places is never wanted. `latch` is not yet: it flags an exhaustive chain of
+    /// `if (tr == k)` on a one-bit `tr` (no latch, but not provable here). Width, carry and sign stay at `warn` until
+    /// their findings on the corpus are settled.
+    fn default() -> Self {
+        Levels(HashMap::from([(Category::Driver, Level::Deny)]))
+    }
+}
 
 impl Levels {
     pub fn set(&mut self, cat: Category, level: Level) {
@@ -230,7 +240,7 @@ mod tests {
         assert_eq!(levels.get(Category::Width), Level::Deny);
         assert_eq!(levels.get(Category::Cdc), Level::Deny);
         assert_eq!(levels.get(Category::Latch), Level::Allow);
-        assert_eq!(levels.get(Category::Driver), Level::Warn);
+        assert_eq!(levels.get(Category::Driver), Level::Deny);
     }
 
     #[test]
@@ -238,7 +248,7 @@ mod tests {
         let levels = Levels::from_manifest("name = \"top\"\n\n[lints]\nwidth = \"deny\" # the carries\ncdc = \"allow\"\n").unwrap();
         assert_eq!(levels.get(Category::Width), Level::Deny);
         assert_eq!(levels.get(Category::Cdc), Level::Allow);
-        assert_eq!(levels.get(Category::Latch), Level::Warn);
+        assert_eq!(levels.get(Category::Carry), Level::Warn);
     }
 
     #[test]

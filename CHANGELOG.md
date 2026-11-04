@@ -24,6 +24,9 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 - lint `reset`: a declared reset that the module tests with the other polarity (`reset rst;` and `if (!rst)`).
 
 ### Changed
+- **Breaking:** a signal driven from two places (`driver` findings) is an error of the compiler, by default. Such a
+  design is invalid SystemVerilog; `--warn driver` (or `[lints] driver = "warn"` in `ovc.toml`) restores the warning.
+  The `latch` and the `width` / `carry` / `sign` findings stay warnings by default for now.
 - **Breaking:** an output port that nothing drives is an error of the compiler, not only of the lint (its value is X in
   simulation). Drive it, or `tie_off()` it. Nested channels are checked too.
 

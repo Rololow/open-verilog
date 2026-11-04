@@ -320,7 +320,7 @@ module Top(input logic a, output logic [1:0] y) {
 #[test]
 fn cover_items_of_a_case_are_flags_printed_at_the_end() {
     let src = "enum St { IDLE, RUN, DONE }
-module D(input clk, input logic [1:0] s, input St st, output logic y) {
+module D(input clk, input logic [1:0] s, input St st, output logic y, output logic z) {
   always_comb {
     case (s) {
       0: y = 1;
@@ -329,8 +329,8 @@ module D(input clk, input logic [1:0] s, input St st, output logic y) {
   }
   always_comb {
     case (st) {
-      St.IDLE: y = 0;
-      default: y = 1;
+      St.IDLE: z = 0;
+      default: z = 1;
     }
   }
 }

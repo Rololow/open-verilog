@@ -5,7 +5,6 @@ const TOP: &str = "module Top(input clk, input rst, slave Stream<logic [7:0]> in
   reset rst;
 
   Fifo<logic [7:0], 4> f(.clk, .rst, .in(inp), .out(outp), .count);
-  assign inp.ready = 1;
 }";
 
 #[test]
@@ -20,7 +19,10 @@ fn fifo_is_specialised_and_only_used_library_modules_are_emitted() {
 #[test]
 fn a_user_definition_takes_precedence() {
     // the empty Fifo drives nothing: the master port is driven here
-    let src = TOP.replace("  assign inp.ready = 1;\n", "  assign inp.ready = 1;\n  assign outp.valid = 0;\n  assign outp.data = 0;\n  assign count = 0;\n")
+    let src = TOP.replace(
+        "  Fifo<logic [7:0], 4> f(.clk, .rst, .in(inp), .out(outp), .count);\n",
+        "  Fifo<logic [7:0], 4> f(.clk, .rst, .in(inp), .out(outp), .count);\n  assign inp.ready = 1;\n  assign outp.valid = 0;\n  assign outp.data = 0;\n  assign count = 0;\n",
+    )
         + "\nmodule Fifo<type T = logic [7:0], int DEPTH = 4>(input clk, input rst) { }";
     let sv = ovc::compile(&src, "top.ov").unwrap();
     // the user's (empty) Fifo is specialised: the library's ports are absent
