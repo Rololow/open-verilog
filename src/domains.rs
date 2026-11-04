@@ -643,8 +643,62 @@ fn check_module(
             ));
         }
     }
+    // `domain p : clk;`: the declared domain of a port. The port is checked against it here, and the instances of the
+    // module are checked against the summary, as for an inferred domain.
+    let mut declared: BTreeMap<String, (String, Pos)> = BTreeMap::new();
+    for it in &items {
+        if let ItemKind::PortDomain { port, clock } = &it.kind {
+            declared.insert(port.clone(), (clock.clone(), it.pos));
+        }
+    }
+    for (port, (clock, pos)) in &declared {
+        if !m.ports.iter().any(|p| &p.name == port) {
+            return Err(ck.error(format!("module '{}': domain of '{port}': '{port}' is not a port of the module", m.name), *pos));
+        }
+        if !ports.get(clock.as_str()).is_some_and(|p| p.dir == Dir::Input) {
+            return Err(ck.error(format!("module '{}': domain of '{port}': '{clock}' is not an input port (a clock)", m.name), *pos));
+        }
+    }
     // the summary of the ports
     for p in &m.ports {
+        if let Some((clock, pos)) = declared.get(&p.name) {
+            let expected = clock_token(&ck, clock);
+            if p.dir == Dir::Input {
+                if p.is_async {
+                    return Err(ck.error(format!("module '{}': input '{}' is async: it has no domain to declare", m.name, p.name), *pos));
+                }
+                for (t, w) in ck.need.get(&p.name).cloned().unwrap_or_default() {
+                    if t != expected {
+                        return Err(ck.error(
+                            format!(
+                                "clock-domain crossing in module '{}': input '{}' is declared in domain '{clock}' but is used in domain {} ({w}).                                  Synchronize it (`input async`), or fix the declaration",
+                                m.name,
+                                p.name,
+                                token_name(&t)
+                            ),
+                            *pos,
+                        ));
+                    }
+                }
+                summary.inputs.insert(p.name.clone(), Some(expected));
+            } else {
+                for t in ck.dom.get(&p.name).cloned().unwrap_or_default() {
+                    if matches!(t, Tok::Port(_) | Tok::Int(_)) && t != expected {
+                        return Err(ck.error(
+                            format!(
+                                "clock-domain crossing in module '{}': output '{}' is declared in domain '{clock}' but its value is in domain {}",
+                                m.name,
+                                p.name,
+                                token_name(&t)
+                            ),
+                            *pos,
+                        ));
+                    }
+                }
+                summary.outputs.insert(p.name.clone(), BTreeSet::from([expected]));
+            }
+            continue;
+        }
         if p.dir == Dir::Input {
             if p.is_async {
                 summary.inputs.insert(p.name.clone(), Some(Tok::Async));

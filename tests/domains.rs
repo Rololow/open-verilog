@@ -196,3 +196,70 @@ module Src(input clk, master Pair p) {
 ";
     assert!(error(src).starts_with("module 'Src': p.s.valid depends combinationally on p.s.ready."));
 }
+
+#[test]
+fn a_declared_domain_that_matches_the_uses_compiles() {
+    compiles(
+        "module X(input clk_a, input clk_b, input logic a, input logic b, output logic q, output logic p) {
+  domain a : clk_a;
+  domain q : clk_a;
+  domain b : clk_b;
+  domain p : clk_b;
+  logic r;
+  always_ff @(posedge clk_a) { r <= a; q <= r; }
+  always_ff @(posedge clk_b) { p <= b; }
+}
+",
+    );
+}
+
+#[test]
+fn an_input_used_in_another_domain_than_declared_is_an_error() {
+    let e = error(
+        "module X(input clk_a, input clk_b, input logic a, output logic q) {
+  domain a : clk_b;
+  always_ff @(posedge clk_a) { q <= a; }
+}
+",
+    );
+    assert!(e.contains("input 'a' is declared in domain 'clk_b' but is used in domain 'clk_a'"), "{e}");
+}
+
+#[test]
+fn an_output_driven_from_another_domain_than_declared_is_an_error() {
+    let e = error(
+        "module X(input clk_a, input clk_b, input logic a, output logic q) {
+  domain q : clk_b;
+  always_ff @(posedge clk_a) { q <= a; }
+}
+",
+    );
+    assert!(e.contains("output 'q' is declared in domain 'clk_b' but its value is in domain 'clk_a'"), "{e}");
+}
+
+#[test]
+fn a_domain_of_a_name_that_is_not_an_input_clock_is_an_error() {
+    let e = error("module X(input clk_a, input logic a, output logic q) {\n  domain a : q;\n  assign q = a;\n}\n");
+    assert!(e.contains("'q' is not an input port (a clock)"), "{e}");
+    let e = error("module X(input clk_a, input logic a, output logic q) {\n  domain zz : clk_a;\n  assign q = a;\n}\n");
+    assert!(e.contains("'zz' is not a port of the module"), "{e}");
+}
+
+#[test]
+fn the_instances_of_a_module_are_checked_against_the_declared_domain() {
+    // the parent drives `d` of `Sub` (declared in clk_b) from a register of clk_a: a crossing
+    let e = error(
+        "module Sub(input clk_b, input logic d, output logic q) {
+  domain d : clk_b;
+  logic r;
+  always_ff @(posedge clk_b) { r <= d; q <= r; }
+}
+module Top(input clk_a, input clk_b, input logic a, output logic q) {
+  logic r;
+  always_ff @(posedge clk_a) { r <= a; }
+  Sub s(.clk_b(clk_b), .d(r), .q(q));
+}
+",
+    );
+    assert!(e.contains("input 'd' of instance"), "{e}");
+}

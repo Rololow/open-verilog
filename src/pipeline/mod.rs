@@ -305,6 +305,7 @@ fn item_word(kind: &ItemKind) -> &'static str {
         ItemKind::Stage { .. } => "a nested stage",
         ItemKind::Comment(_) | ItemKind::Raw(_) => "a comment",
         ItemKind::SameDomain(_) => "a same_domain declaration",
+        ItemKind::PortDomain { .. } => "a domain declaration of a port",
         ItemKind::Initial(_) => "an initial block",
         ItemKind::Fn { .. } => "a function",
         ItemKind::Fsm { .. } => "an fsm",

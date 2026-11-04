@@ -130,6 +130,10 @@ impl Emitter {
                 self.line(&format!("// same clock domain: {}", names.join(", ")));
                 Ok(())
             }
+            ItemKind::PortDomain { port, clock } => {
+                self.line(&format!("// {port} is in the clock domain of {clock}"));
+                Ok(())
+            }
             ItemKind::Raw(lines) => {
                 for line in lines {
                     self.line(line);

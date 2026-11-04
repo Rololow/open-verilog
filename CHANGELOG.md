@@ -9,6 +9,8 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 - `ovc audit FILES`: the places where a design asks the compiler to trust the author, without changing anything: the
   `async` inputs and declarations (not checked for a clock crossing), the `same_domain` declarations, the `// ovc: ignore`
   comments, the `.wrap()` truncations, and the lint levels below their defaults.
+- `domain p : clk;` in a module: the port `p` (an input or an output) is in the clock domain of the input `clk`. The uses
+  of `p` are checked against it, and so are the instances that connect it. The domain is inferred without it.
 - The standard library has the clock-domain crossings: `Sync`, `PulseSync` (a pulse across clocks) and `AsyncFifo`.
 - `--allow CAT,...`, `--warn CAT,...`, `--deny CAT,...`: the level of each category of check, on `ovc lint` and on the
   compiler. At `deny` a finding fails the lint, or the compilation (it is an error, at its position); `// ovc: ignore`

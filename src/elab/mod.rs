@@ -1411,6 +1411,7 @@ impl<'a> Design<'a> {
                 }
                 ItemKind::Comment(text) => out.push(at(ItemKind::Comment(text.clone()))),
                 ItemKind::SameDomain(names) => out.push(at(ItemKind::SameDomain(names.clone()))),
+                ItemKind::PortDomain { port, clock } => out.push(at(ItemKind::PortDomain { port: port.clone(), clock: clock.clone() })),
                 // expanded by the parser at each call
                 ItemKind::Proc { .. } => {}
                 // a memory map: no hardware of its own; its devices are read as constants (`io.UART`, `io.count`)

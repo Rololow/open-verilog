@@ -185,6 +185,14 @@ impl Parser {
                 self.expect(";")?;
                 Ok(vec![ItemKind::SameDomain(names)])
             }
+            "domain" if self.peek(1).kind == Kind::Ident && self.peek(2).text == ":" => {
+                self.i += 1;
+                let port = self.ident()?;
+                self.expect(":")?;
+                let clock = self.ident()?;
+                self.expect(";")?;
+                Ok(vec![ItemKind::PortDomain { port, clock }])
+            }
             "clock" if self.peek(1).kind == Kind::Ident => {
                 self.i += 1;
                 let name = self.ident()?;

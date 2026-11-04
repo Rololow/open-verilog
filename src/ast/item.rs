@@ -132,6 +132,9 @@ pub enum ItemKind {
     Initial(Stmt),
     /// `same_domain a, b;`: the clocks of the names are synchronous (the same source), so a value may cross between them.
     SameDomain(Vec<String>),
+    /// `domain p : clk;`: the port `p` (an input or an output) is in the clock domain of the input port `clk`. The uses of
+    /// the port are checked against it, and the instances of the module are checked against it as well.
+    PortDomain { port: String, clock: String },
     /// A comment in the output.
     Comment(String),
     /// Lines copied verbatim (the checks of a pipeline).

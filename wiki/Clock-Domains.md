@@ -83,6 +83,22 @@ module Bridge(input clk_a, input rst_a, input clk_b, input rst_b, input logic [7
 The examples do not show what an error looks like. A register of `clk_b` that reads a register of `clk_a` directly is a
 crossing: the compiler refuses it with the message `clock-domain crossing in module ...`.
 
+## Declaring the domain of a port
+
+The domain of a port is inferred from the registers that read it, and nothing has to be written. To state it, and have
+the compiler check it, write `domain p : clk;` in the module, where `clk` is an input clock:
+
+```
+module Sub(input clk_b, input logic d, output logic q) {
+  domain d : clk_b;     // d is read in clk_b; an instance that drives it from another clock is an error
+  domain q : clk_b;     // q is in clk_b
+  ...
+}
+```
+
+An input declared with `domain` must be used in that domain only; an output must be driven from it. An `async` input has
+no domain to declare.
+
 ## The standard library
 
 The crossings are also in the standard library, available in every file without a definition (a definition of the same
