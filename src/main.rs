@@ -12,6 +12,7 @@ usage: ovc --version
        ovc FILE.ov... [-o OUT.sv] [--emit-tests TB.sv] [--emit-probes P.sv] [--emit-isa-sv P.sv] [--emit-isa-py P.py]
              [--emit-doc DOC.md] [--dump-pipeline] [--no-asserts] [--werror]
        ovc build PATH... [-o OUT_DIR] [--root DIR]
+       ovc audit PATH... [-f FILES.f]   (the async ports, same_domain, ignores, .wrap() and lowered levels)
 
   FILE.ov...      the files are one design: they are compiled together, the SystemVerilog goes to -o or stdout
   build PATH...   every .ov file under PATH (directories are searched); one .sv per file, in OUT_DIR (default: out),
@@ -35,6 +36,8 @@ struct Args {
     asserts: bool,
     top: Option<String>,
     build: bool,
+    /// `ovc audit`: the places where the design asks the compiler to trust the author (see `audit`).
+    audit: bool,
     root: Option<String>,
     /// `-f LIST`: the inputs of `build`, one path per line (`//` comments).
     filelist: Option<String>,
@@ -51,6 +54,7 @@ fn parse_args(argv: Vec<String>) -> Result<Args, String> {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match arg.as_str() {
             "build" => args.build = true,
+            "audit" => args.audit = true,
             "-o" => args.output = Some(value("-o")?),
             "--root" => args.root = Some(value("--root")?),
             "-f" | "--filelist" => args.filelist = Some(value("-f")?),
@@ -209,6 +213,10 @@ fn run(args: Args) -> Result<(), String> {
     // the levels of `ovc.toml` are overridden by the ones given on the command line
     let mut levels = ovc::diag::project_levels()?;
     levels.extend(&args.levels);
+    if args.audit {
+        print!("{}", ovc::audit::report(&units, &levels));
+        return Ok(());
+    }
     let options = ovc::Options { asserts: args.asserts, top: args.top.clone(), cover: args.cover, levels };
     let sources: Vec<(String, String)> = units.iter().map(|(n, s, _)| (n.clone(), s.clone())).collect();
     let parsed: Vec<File> = units.into_iter().map(|(_, _, f)| f).collect();

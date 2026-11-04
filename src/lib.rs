@@ -4,6 +4,7 @@
 //! (modules refer to each other across files), and emitted per origin file.
 
 pub mod ast;
+pub mod audit;
 pub mod checks;
 pub mod cover;
 pub mod diag;

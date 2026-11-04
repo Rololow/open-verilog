@@ -6,6 +6,10 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 ## [Unreleased]
 
 ### Added
+- `ovc audit FILES`: the places where a design asks the compiler to trust the author, without changing anything: the
+  `async` inputs and declarations (not checked for a clock crossing), the `same_domain` declarations, the `// ovc: ignore`
+  comments, the `.wrap()` truncations, and the lint levels below their defaults.
+- The standard library has the clock-domain crossings: `Sync`, `PulseSync` (a pulse across clocks) and `AsyncFifo`.
 - `--allow CAT,...`, `--warn CAT,...`, `--deny CAT,...`: the level of each category of check, on `ovc lint` and on the
   compiler. At `deny` a finding fails the lint, or the compilation (it is an error, at its position); `// ovc: ignore`
   still silences it. An unknown category name is refused with the list of the known ones. The categories are a typed

@@ -240,3 +240,64 @@ module AxiLiteMonitor<int AW = 32, int DW = 32>(input clk, input rst, monitor Ax
     }
   }
 }
+
+// ---- Clock-domain crossing. A value of another clock enters a module through an `async` input, which is the only
+// place where the compiler does not check the crossing (`ovc audit` lists them). The modules below are the crossings.
+
+// Two-flop synchronizer: a level of another clock (`d`) into `clk`. Each bit is metastable for at most one cycle.
+module Sync<int W = 1>(input clk, input async logic [W-1:0] d, output logic [W-1:0] q) {
+  clock clk;
+
+  logic [W-1:0] meta;
+  always_ff @(posedge clk) { meta <= d; q <= meta; }
+}
+
+// One pulse of `clk_src` (a cycle high) comes out as one pulse of `clk_dst`. The pulse toggles a register of the source
+// clock; the toggle crosses through a Sync, and each change of it is a pulse. Two pulses closer than three cycles of
+// `clk_dst` are merged: a pulse is only as fast as the destination can see it.
+module PulseSync(input clk_src, input rst_src, input logic pulse, input clk_dst, input rst_dst, output logic out) {
+  logic toggle;
+  logic toggle_dst, seen;
+  Sync sync_toggle(.clk(clk_dst), .d(toggle), .q(toggle_dst));
+  always_ff @(posedge clk_src) {
+    if (rst_src) { toggle <= 0; }
+    else if (pulse) { toggle <= !toggle; }
+  }
+  always_ff @(posedge clk_dst) {
+    if (rst_dst) { seen <= 0; }
+    else { seen <= toggle_dst; }
+  }
+  assign out = toggle_dst ^ seen;
+}
+
+// Asynchronous FIFO of 2^A entries of W bits: a write clock and a read clock. The pointers cross as Gray codes (b ^ (b >> 1)) through
+// two synchronizers each way; the memory is written in `wclk` and read in `rclk`, which the pointers keep apart.
+module AsyncFifo<int W = 8, int A = 4>(
+  input wclk, input wrst, input push, input logic [W-1:0] wdata, output logic full,
+  input rclk, input rrst, input pop, output logic [W-1:0] rdata, output logic empty
+) {
+  async logic [W-1:0] mem [1 << A];
+  logic [A:0] wbin, rbin, wgray, rgray, wgray_r, rgray_w;
+  Sync<A + 1> sync_w2r(.clk(rclk), .d(wgray), .q(wgray_r));
+  Sync<A + 1> sync_r2w(.clk(wclk), .d(rgray), .q(rgray_w));
+  wire [A:0] wbin_next = (wbin + (push && !full)).wrap();
+  wire [A:0] rbin_next = (rbin + (pop && !empty)).wrap();
+  always_ff @(posedge wclk) {
+    if (wrst) { {wbin, wgray, full} <= 0; }
+    else {
+      if (push && !full) { mem[wbin[A-1:0]] <= wdata; }
+      wbin <= wbin_next;
+      wgray <= (wbin_next ^ (wbin_next >> 1));
+      full <= (wbin_next ^ (wbin_next >> 1)) == {~rgray_w[A:A-1], rgray_w[A-2:0]};
+    }
+  }
+  always_ff @(posedge rclk) {
+    if (rrst) { {rbin, rgray} <= 0; empty <= 1; }
+    else {
+      rbin <= rbin_next;
+      rgray <= (rbin_next ^ (rbin_next >> 1));
+      empty <= (rbin_next ^ (rbin_next >> 1)) == wgray_r;
+    }
+  }
+  assign rdata = mem[rbin[A-1:0]];
+}

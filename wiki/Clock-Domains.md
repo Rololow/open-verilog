@@ -82,3 +82,17 @@ module Bridge(input clk_a, input rst_a, input clk_b, input rst_b, input logic [7
 
 The examples do not show what an error looks like. A register of `clk_b` that reads a register of `clk_a` directly is a
 crossing: the compiler refuses it with the message `clock-domain crossing in module ...`.
+
+## The standard library
+
+The crossings are also in the standard library, available in every file without a definition (a definition of the same
+name in the design takes precedence):
+
+- `Sync<W>(clk, d, q)`: the two-flop synchronizer above.
+- `PulseSync(clk_src, rst_src, pulse, clk_dst, rst_dst, out)`: one pulse of the source clock is one pulse of the
+  destination clock. It toggles a register of the source domain and sends the toggle through a `Sync`. Two pulses closer
+  than three cycles of the destination clock are merged.
+- `AsyncFifo<W, A>(wclk, wrst, push, wdata, full, rclk, rrst, pop, rdata, empty)`: 2^A entries, Gray-coded pointers.
+
+These modules are checked by the compiler and the lint; they have not been simulated by the project. The `async` inputs
+and declarations of a design are listed by `ovc audit`.

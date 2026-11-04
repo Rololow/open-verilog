@@ -6,6 +6,7 @@ ovc a.ov b.ov                           # several files, SystemVerilog concatena
 ovc build src/ -o out                   # every .ov under src/: one .sv per file, and a file list
 ovc build -f files.f --in-place         # the inputs from a file list, each .sv written next to its source (ovc_files.f)
 ovc build src/ --root src -o out       # the root of the mirrored folders (a source outside it is an error)
+ovc audit src/                          # the async ports, same_domain, ignores, .wrap() truncations, lowered levels
 
 The sources of `build` are not preprocessed: a file list with an option such as `+incdir+DIR` is refused. To check plain
 .sv files with their include directories and defines, use `ovc lint -f files.f`.
