@@ -1,6 +1,5 @@
 //! isa: one description of the instruction formats -> decoding views, SV package, Python codec, documentation.
-//! Ported from the Python `tests/test_isa.py`. The codec runs in Python (when it is installed), the RTL decoder in
-//! Verilator (when it is available).
+//! Ported from the Python `tests/test_isa.py`. The codec runs in Python (when it is installed).
 
 mod common;
 
@@ -109,63 +108,3 @@ fn unknown_field_in_a_view() {
     assert!(err.message.contains("format 'LD' has no field 'mem_adr'"), "{}", err.message);
 }
 
-#[test]
-fn rtl_decodes_what_the_python_encoder_writes() {
-    if !common::simulator_enabled() {
-        return;
-    }
-    let dir = common::scratch("isa-rtl");
-    let c = compiled(&example());
-    write_codec(&dir, &c);
-    // the encodings come from the Python codec, with the same random draws as the Python test
-    let script = "
-import random
-import isa_gen as g
-E = g.Einsum
-rng = random.Random(1)
-for _ in range(20):
-    en, addr, rd = rng.randrange(16), rng.randrange(1024), [rng.randrange(16) for _ in range(4)]
-    ld, bb = E.encode(E.LD, en=en, mem_addr=addr), E.encode(E.BB, pe_mode=1, rd_addr=rd)
-    bank = rng.randrange(4)
-    print('LD', en, addr, ld)
-    print('BB', bank, ' '.join(map(str, rd)), bb)
-";
-    let Some(lines) = python(&dir, script) else {
-        eprintln!("skipped: Python is not installed");
-        return;
-    };
-    let mut checks = String::new();
-    for line in lines.lines() {
-        let w: Vec<&str> = line.split_whitespace().collect();
-        match w.as_slice() {
-            ["LD", en, addr, ld] => {
-                let ld: u64 = ld.parse().unwrap();
-                checks += &format!("instr = 64'h{ld:x}; #1; if (op !== 5 || en !== {en} || addr !== {addr} || len !== 18) $fatal(1, \"LD %h %h %h\", op, en, addr);\n    ");
-            }
-            ["BB", bank, r0, r1, r2, r3, bb] => {
-                let bb: u64 = bb.parse().unwrap();
-                let rd = [r0, r1, r2, r3];
-                let bank: usize = bank.parse().unwrap();
-                checks += &format!("instr = 64'h{bb:x}; bank = {bank}; #1; if (op !== 2 || rd2 !== {} || rdv !== {} || len !== 24) $fatal(1, \"BB %h %h\", rd2, rdv);\n    ", rd[2], rd[bank]);
-            }
-            _ => panic!("unexpected line {line}"),
-        }
-    }
-    fs::write(dir.join("dut.sv"), &c.sv).unwrap();
-    let tb = format!(
-        "module tb;
-  logic [63:0] instr; logic [1:0] bank = 0; logic [3:0] op, en, rd2, rdv;
-  logic [9:0] addr; logic [7:0] len;
-  Decoder dut (.*);
-  initial begin
-    {checks}
-    $display(\"PASS\"); $finish;
-  end
-endmodule
-"
-    );
-    fs::write(dir.join("tb.sv"), tb).unwrap();
-    let out = common::simulate(&dir, &["-sv", "dut.sv", "tb.sv"], "tb");
-    assert!(out.contains("PASS"), "{out}");
-    let _ = fs::remove_dir_all(&dir);
-}

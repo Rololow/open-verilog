@@ -98,10 +98,6 @@ cargo test
 cargo clippy --all-targets
 ```
 
-The simulations run with Verilator: directly on Linux, through WSL on Windows (the distribution `OVC_WSL_DISTRO`,
-`Ubuntu-24.04` by default). They run when Verilator is available, and are skipped otherwise, with a note. `OVC_SIM=off`
-skips them (the suite then takes well under a minute); `OVC_SIM=require` makes a missing Verilator a failure.
-
 The golden tests compare with `expected/`, byte for byte (the repository stores LF line endings on every platform,
 see `.gitattributes`). Unit tests in `tests/` cover diagnostics (positions, messages), the pipeline, declarations,
 manifest configs, struct views, the testbench, the probes and the library.

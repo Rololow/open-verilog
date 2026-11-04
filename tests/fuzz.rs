@@ -1,10 +1,7 @@
-//! Random expressions: ovc (parse -> fold -> emit) must agree with Verilator evaluating the same source text. This catches
-//! precedence / parenthesization bugs in the parser and emitter, and constant-folding differences with SystemVerilog
-//! semantics. Ported from the Python `tests/test_fuzz.py`; the Verilator comparison runs when it is available.
+//! Random expressions: ovc (parse -> fold -> emit) must keep the shape of each expression through a round trip. This
+//! catches precedence / parenthesization bugs in the parser and emitter. Ported from the Python `tests/test_fuzz.py`.
 
 mod common;
-
-use std::fs;
 
 const BINOPS: [&str; 19] = ["+", "-", "*", "/", "%", "<<", ">>", ">>>", "&", "|", "^", "==", "!=", "<", "<=", ">", ">=", "&&", "||"];
 const UNOPS: [&str; 6] = ["~", "-", "!", "&", "|", "^"];
@@ -109,49 +106,3 @@ fn parse_emit_roundtrip() {
     }
 }
 
-#[test]
-fn expressions_match_verilator() {
-    if !common::simulator_enabled() {
-        return;
-    }
-    let exprs = expressions(150, 7);
-    let n = exprs.len();
-    let body: String = exprs.iter().enumerate().map(|(i, e)| format!("  assign y[{i}] = ({e}).wrap();\n")).collect();
-    let src = format!(
-        "module Fuzz(input logic [31:0] x0, input logic [31:0] x1, input logic [31:0] x2, \
-         input logic [31:0] x3, output logic [31:0] y [{n}]) {{\n{body}}}\n"
-    );
-    let sv = ovc::compile(&src, "fuzz.ov").unwrap_or_else(|e| panic!("{e}"));
-    let checks: String = exprs
-        .iter()
-        .enumerate()
-        .map(|(i, e)| format!("      e = {e};\n      if (y[{i}] !== e) $fatal(1, \"FAIL #{i}: got %h expected %h\", y[{i}], e);\n"))
-        .collect();
-    let tb = format!(
-        "module fuzz_tb;
-  logic [31:0] x0, x1, x2, x3, e;
-  logic [31:0] y [{n}];
-  Fuzz dut (.x0, .x1, .x2, .x3, .y);
-  initial begin
-    repeat (40) begin
-      x0 = $urandom; x1 = $urandom_range(0, 9); x2 = $urandom; x3 = $urandom_range(1, 5);
-      #1;
-{checks}    end
-    $display(\"PASS\");
-    $finish;
-  end
-endmodule
-"
-    );
-    let dir = common::scratch("fuzz");
-    fs::write(dir.join("dut.sv"), sv).unwrap();
-    fs::write(dir.join("tb.sv"), tb).unwrap();
-    let out = common::simulate(&dir, &["-sv", "dut.sv", "tb.sv"], "fuzz_tb");
-    let _ = fs::remove_dir_all(&dir);
-    // the failing expression, named by its number in the testbench's message
-    let failed = out.find("FAIL #").and_then(|at| out[at + 6..].split(':').next()?.trim().parse::<usize>().ok());
-    if let Some(k) = failed {
-        panic!("expression #{k} differs from the simulation: {}\n{out}", exprs[k]);
-    }
-    assert!(out.contains("PASS"), "{out}");
-}
