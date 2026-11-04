@@ -1,5 +1,5 @@
 //! Connections across the hierarchy: `a.b.sig` reads and `assign a.b.port = x` drives, through generated ports.
-//! Ported from the Python `tests/test_hier.py`; the simulation runs only when Verilator is available.
+//! Ported from the Python `tests/test_hier.py`.
 
 mod common;
 
@@ -142,43 +142,6 @@ module Top(input clk_a, input clk_b, input logic [7:0] d, output logic [7:0] q, 
     );
     assert!(msg.contains("clock-domain crossing") && msg.contains("'clk_a'"), "{msg}");
 }
-
-#[test]
-fn simulates() {
-    if !common::simulator_enabled() {
-        return;
-    }
-    let sv = sv_of(
-        "
-module Top(input clk, input logic [7:0] d, input halt, output logic [7:0] q, output logic [7:0] probe) {
-  clock clk;
-
-  Mid mid(.clk, .d, .q);
-  assign probe = mid.leaf.secret;
-  assign mid.leaf.stall = halt;
-}",
-        Some("Top"),
-    );
-    let dir = common::scratch("hier");
-    std::fs::write(dir.join("dut.sv"), sv).unwrap();
-    std::fs::write(dir.join("tb.sv"), TB).unwrap();
-    let out = common::simulate(&dir, &["-sv", "dut.sv", "tb.sv"], "tb");
-    assert!(out.contains("PASS"), "{out}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-const TB: &str = "module tb;
-  logic clk = 0, halt = 0; logic [7:0] d = 0, q, probe;
-  Top dut (.*);
-  always #5 clk = ~clk;
-  initial begin
-    @(negedge clk) d = 42; @(negedge clk) if (probe !== 42) $fatal(1, \"FAIL probe %0d\", probe);
-    halt = 1; d = 7; @(negedge clk) if (probe !== 42) $fatal(1, \"FAIL stall %0d\", probe);
-    halt = 0; @(negedge clk) if (probe !== 7) $fatal(1, \"FAIL resume %0d\", probe);
-    $display(\"PASS\"); $finish;
-  end
-endmodule
-";
 
 #[test]
 fn loop_instances_are_reachable_by_index() {

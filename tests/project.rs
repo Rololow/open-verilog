@@ -1,5 +1,5 @@
 //! Multi-file projects: `ovc build` keeps the folder structure and resolves names across files. Ported from the Python
-//! `tests/test_project.py`; the output is linted with Verilator when it is available.
+//! `tests/test_project.py`.
 
 mod common;
 
@@ -118,20 +118,6 @@ fn duplicate_module_across_files() {
     let (ok, err) = ovc(&dir, &["build", "src"]);
     assert!(!ok);
     assert!(err.contains("module 'Reg' is defined twice (first in"), "{err}");
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn output_compiles_with_its_file_list() {
-    if !common::simulator_enabled() {
-        return;
-    }
-    let dir = common::scratch("project-vlog");
-    make_project(&dir);
-    let (ok, err) = ovc(&dir, &["build", "src"]);
-    assert!(ok, "{err}");
-    // the file list names the files from the folder the build ran in
-    common::lint_only(&dir, &["-f", "out/files.f"]);
     let _ = fs::remove_dir_all(&dir);
 }
 

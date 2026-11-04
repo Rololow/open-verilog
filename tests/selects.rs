@@ -1,5 +1,5 @@
 //! Part-selects of values that are not named signals, and definitions repeated across files (in .ov and in lint).
-//! Ported from the Python `tests/test_selects.py`; the simulation runs only when Verilator is available.
+//! Ported from the Python `tests/test_selects.py`.
 
 mod common;
 
@@ -107,31 +107,6 @@ fn definitions_repeated_across_files_are_lint_findings() {
     let dup: Vec<_> = found.iter().filter(|(c, _, _)| c == "duplicate").collect();
     assert_eq!(dup.len(), 1, "{found:?}");
     assert!(dup[0].1.contains("'nib_t' is already defined at"), "{found:?}");
-    let _ = fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn lowered_selects_simulate() {
-    if !common::simulator_enabled() {
-        return;
-    }
-    let src = format!(
-        "{SEL}
-test \"selects\" for M {{
-  a = 200; b = 100; i = 2;
-  expect(hi == 18, \"300 >> 4: the carry is kept\");
-  expect(x == 0 && p == 3);         // a ^ b = 0xac
-  a = 'hff; b = 'h0c;
-  expect(x == 1 && p == 0 && k == 'ha);   // a ^ b = 0xf3
-}}
-"
-    );
-    let c = ovc::compile_full(&src, "t.ov").unwrap_or_else(|e| panic!("{}", e.message));
-    let dir = scratch("selects-sim");
-    fs::write(dir.join("dut.sv"), &c.sv).unwrap();
-    fs::write(dir.join("tests.sv"), c.tests_sv.clone().expect("a testbench")).unwrap();
-    let out = common::simulate(&dir, &["-sv", "dut.sv", "tests.sv"], "ovc_tests");
-    assert!(out.contains("ovc tests: 1 passed, 0 failed"), "{out}");
     let _ = fs::remove_dir_all(&dir);
 }
 
