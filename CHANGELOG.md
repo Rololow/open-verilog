@@ -31,6 +31,8 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
   simulation). Drive it, or `tie_off()` it. Nested channels are checked too.
 
 ### Fixed
+- A `.wrap()` written in a generate loop is honoured by the width and carry checks: the copies of the signal are named
+  with the loop index (`penalty_0`), and they were not matched with the source name (`penalty`).
 - `stage.x` names the stage that defines `x`: `dec.v`, with `v` defined in a later stage, is an error. It was silently
   resolved to that later `v`.
 - An error in a pipeline is reported at the module's own file (it was `<project>`).

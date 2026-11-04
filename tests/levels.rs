@@ -50,3 +50,29 @@ fn ignore_comment_silences_a_denied_finding() {
     assert!(ovc::compile_with(&src, &file, &with(Category::Width, Level::Deny)).is_ok());
     let _ = fs::remove_dir_all(&dir);
 }
+
+/// A `.wrap()` written in a generate loop is honoured: its copies are elaborated with the loop index in their names.
+fn carry_in_a_loop(rhs: &str) -> String {
+    format!(
+        "module Loop(input logic [2:0] a, output logic [2:0] y [2]) {{\n  for i in 0..2 {{\n    wire [2:0] w = {rhs};\n    assign y[i] = w;\n  }}\n}}\n"
+    )
+}
+
+#[test]
+fn a_wrap_in_a_generate_loop_is_an_intended_truncation() {
+    let src = carry_in_a_loop("(a + i).wrap()");
+    assert!(ovc::compile_with(&src, "t.ov", &with(Category::Carry, Level::Deny)).is_ok(), "{src}");
+}
+
+#[test]
+fn a_wrap_outside_a_loop_is_an_intended_truncation() {
+    let src = "module Flat(input logic [2:0] a, output logic [2:0] y) {\n  wire [2:0] w = (a + 1).wrap();\n  assign y = w;\n}\n";
+    assert!(ovc::compile_with(src, "t.ov", &with(Category::Carry, Level::Deny)).is_ok());
+}
+
+#[test]
+fn a_loop_without_wrap_is_still_a_carry_finding() {
+    let src = carry_in_a_loop("a + i");
+    let Err(err) = ovc::compile_with(&src, "t.ov", &with(Category::Carry, Level::Deny)) else { panic!("the design must be refused") };
+    assert!(err.message.contains("bits"), "{}", err.message);
+}

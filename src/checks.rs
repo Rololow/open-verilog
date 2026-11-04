@@ -60,6 +60,9 @@ pub fn undriven_outputs(modules: &[Module]) -> Vec<Error> {
 pub struct Wrapped {
     /// The targets of an assignment with `.wrap()`: (module, signal).
     signals: HashSet<(String, String)>,
+    /// The targets among `signals` that are declared or assigned inside a generate loop: the elaboration names each
+    /// of their copies with the loop's indices (`penalty` is `penalty_0`, `penalty_1`...).
+    loop_signals: HashSet<(String, String)>,
     /// The connections with `.wrap()`: (module, instance, port).
     ports: HashSet<(String, String, String)>,
 }
@@ -68,26 +71,26 @@ pub struct Wrapped {
 pub fn wrapped_in(file: &File) -> Wrapped {
     let mut w = Wrapped::default();
     for m in &file.modules {
-        scan_wrapped(&base_module(&m.name), &m.items, &mut w);
+        scan_wrapped(&base_module(&m.name), &m.items, false, &mut w);
     }
     w
 }
 
-fn scan_wrapped(module: &str, items: &[Item], w: &mut Wrapped) {
+fn scan_wrapped(module: &str, items: &[Item], in_loop: bool, w: &mut Wrapped) {
     for it in items {
         match &it.kind {
-            ItemKind::ContAssign { lhs, rhs } => mark(module, lhs, rhs, w),
+            ItemKind::ContAssign { lhs, rhs } => mark(module, lhs, rhs, in_loop, w),
             // `wire T x = e;` is an assignment of `e` to `x`
             ItemKind::Decl(d) => {
                 for x in &d.decls {
                     if let Some(e) = &x.init {
-                        mark(module, &Expr::Ident(x.name.clone(), (0, 0)), e, w);
+                        mark(module, &Expr::Ident(x.name.clone(), (0, 0)), e, in_loop, w);
                     }
                 }
             }
             ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
                 for (lhs, rhs, _, _) in assignments(body) {
-                    mark(module, lhs, rhs, w);
+                    mark(module, lhs, rhs, in_loop, w);
                 }
             }
             ItemKind::Instance(i) => {
@@ -99,11 +102,12 @@ fn scan_wrapped(module: &str, items: &[Item], w: &mut Wrapped) {
                     }
                 }
             }
-            ItemKind::GenFor { body, .. } | ItemKind::Stage { items: body, .. } => scan_wrapped(module, body, w),
+            ItemKind::GenFor { body, .. } => scan_wrapped(module, body, true, w),
+            ItemKind::Stage { items: body, .. } => scan_wrapped(module, body, in_loop, w),
             ItemKind::GenIf { then, els, .. } => {
-                scan_wrapped(module, then, w);
+                scan_wrapped(module, then, in_loop, w);
                 if let Some(e) = els {
-                    scan_wrapped(module, e, w);
+                    scan_wrapped(module, e, in_loop, w);
                 }
             }
             _ => {}
@@ -122,10 +126,13 @@ fn flat_name(e: &Expr) -> Option<String> {
     }
 }
 
-fn mark(module: &str, lhs: &Expr, rhs: &Expr, w: &mut Wrapped) {
+fn mark(module: &str, lhs: &Expr, rhs: &Expr, in_loop: bool, w: &mut Wrapped) {
     if has_wrap(rhs) {
         for p in parts(lhs) {
             if let Some(n) = flat_name(p) {
+                if in_loop {
+                    w.loop_signals.insert((module.to_string(), n.clone()));
+                }
                 w.signals.insert((module.to_string(), n));
             }
         }
@@ -555,7 +562,22 @@ fn check_sizes(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
 }
 
 fn target_wrapped(module: &str, lhs: &Expr, wrapped: &Wrapped) -> bool {
-    parts(lhs).into_iter().filter_map(base).any(|n| wrapped.signals.contains(&(module.to_string(), n)))
+    parts(lhs).into_iter().filter_map(base).any(|n| is_wrapped(module, &n, wrapped))
+}
+
+/// Whether the elaborated signal `name` is a target written with `.wrap()`. A signal of a generate loop is named with
+/// the loop's indices (`penalty_0`, or `x_1_2` in nested loops): it matches its source name followed by indices.
+fn is_wrapped(module: &str, name: &str, wrapped: &Wrapped) -> bool {
+    if wrapped.signals.contains(&(module.to_string(), name.to_string())) {
+        return true;
+    }
+    wrapped.loop_signals.iter().any(|(m, source)| {
+        m == module
+            && name
+                .strip_prefix(source.as_str())
+                .and_then(|rest| rest.strip_prefix('_'))
+                .is_some_and(|idx| idx.split('_').all(|d| !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit())))
+    })
 }
 
 /// A combinational block must assign each signal on every path, or a latch is inferred.
