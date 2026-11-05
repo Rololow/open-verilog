@@ -8,6 +8,7 @@ bundle Stream<type T> {
   output logic valid = 0;                  // idle: nothing offered, everything accepted
   input logic ready = 1;
   output T data;
+  // The transfer of this cycle: valid and ready are both high.
   fn fire() -> logic { return valid & ready; }
 }
 
@@ -98,9 +99,13 @@ struct AxiAddr<int AW = 32, int IW = 4> {
   logic [2:0] size;
   logic [1:0] burst;
 }
+// Write data beat: the data, one byte strobe per byte, and whether it is the last beat of the burst.
 struct AxiW<int DW = 32> { logic [DW-1:0] data; logic [DW/8-1:0] strb; logic last; }
+// Write response: the id of the write, and its result (see the responses above).
 struct AxiB<int IW = 4> { logic [IW-1:0] id; logic [1:0] resp; }
+// Read data beat: the id of the read, its data, its result, and whether it is the last beat of the burst.
 struct AxiR<int DW = 32, int IW = 4> { logic [IW-1:0] id; logic [DW-1:0] data; logic [1:0] resp; logic last; }
+// The five channels of an AXI4 bus (AW, W, B, AR, R), each checked like a Stream.
 bundle Axi<int AW = 32, int DW = 32, int IW = 4> {
   monitor AxiMonitor<AW, DW, IW>;          // on every slave port: burst rules, WLAST / RLAST, responses
   output Stream<AxiAddr<AW, IW>> aw;
@@ -112,8 +117,11 @@ bundle Axi<int AW = 32, int DW = 32, int IW = 4> {
 
 // AXI4-Lite: single beats, no id. prot is kept (Linux drivers do not care, some IP does).
 struct AxiLiteAddr<int AW = 32> { logic [AW-1:0] addr; logic [2:0] prot; }
+// AXI4-Lite write data beat: the data and one byte strobe per byte.
 struct AxiLiteW<int DW = 32> { logic [DW-1:0] data; logic [DW/8-1:0] strb; }
+// AXI4-Lite read data beat: the data and its result.
 struct AxiLiteR<int DW = 32> { logic [DW-1:0] data; logic [1:0] resp; }
+// The five channels of an AXI4-Lite bus (AW, W, B, AR, R): single beats, no id.
 bundle AxiLite<int AW = 32, int DW = 32> {
   monitor AxiLiteMonitor<AW, DW>;
   output Stream<AxiLiteAddr<AW>> aw;
