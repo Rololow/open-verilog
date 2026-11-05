@@ -5,6 +5,8 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-11-05
+
 ### Added
 - `ovc audit FILES`: the places where a design asks the compiler to trust the author, without changing anything: the
   `async` inputs and declarations (not checked for a clock crossing), the `same_domain` declarations, the `// ovc: ignore`
