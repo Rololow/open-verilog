@@ -12,6 +12,11 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 - `ovc-lsp` completes the names visible in the module of the cursor, the names of the workspace, and the keywords.
 - `ovc-lsp` lists the symbols of a file (document symbols) and of the workspace (workspace symbols, by name).
 
+### Fixed
+- The `[lints]` table of `ovc.toml` had no effect on the command line: the default levels, given to the command line's
+  overrides, overruled it (`width = "warn"` was still an error). Only the categories named on the command line now
+  overrule the manifest.
+
 ## [0.1.21] - 2026-11-05
 
 ### Added

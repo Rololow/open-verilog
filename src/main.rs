@@ -48,7 +48,7 @@ struct Args {
 }
 
 fn parse_args(argv: Vec<String>) -> Result<Args, String> {
-    let mut args = Args { asserts: true, ..Args::default() };
+    let mut args = Args { asserts: true, levels: ovc::diag::Levels::unset(), ..Args::default() };
     let mut it = argv.into_iter();
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));

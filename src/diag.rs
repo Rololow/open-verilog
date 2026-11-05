@@ -157,6 +157,12 @@ impl Default for Levels {
 }
 
 impl Levels {
+    /// No level is set. The levels of the command line start from it, so that `extend` only overrules the categories the
+    /// command line names: the defaults would overrule the manifest.
+    pub fn unset() -> Levels {
+        Levels(HashMap::new())
+    }
+
     pub fn set(&mut self, cat: Category, level: Level) {
         self.0.insert(cat, level);
     }
@@ -219,6 +225,18 @@ impl Levels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_command_line_overrules_only_the_categories_it_names() {
+        let mut levels = Levels::from_manifest("[lints]\nwidth = \"warn\"\n").unwrap();
+        assert_eq!(levels.get(Category::Width), Level::Warn);
+        let mut cli = Levels::unset();
+        cli.set(Category::Carry, Level::Warn);
+        levels.extend(&cli);
+        assert_eq!(levels.get(Category::Width), Level::Warn, "the manifest keeps the category the command line does not name");
+        assert_eq!(levels.get(Category::Carry), Level::Warn);
+        assert_eq!(levels.get(Category::Sign), Level::Deny, "the defaults remain for the others");
+    }
 
     #[test]
     fn messages_map_to_their_category() {

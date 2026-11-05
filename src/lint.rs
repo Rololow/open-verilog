@@ -223,7 +223,7 @@ pub(crate) fn silenced(f: &Finding, sources: &mut HashMap<String, Vec<String>>) 
 /// `ovc lint` on the command line: the findings, then a summary. The exit code is 1 when a part was not analyzed, or
 /// when `--werror` and there are findings.
 pub fn main(args: &[String]) -> i32 {
-    let mut opts = Options::default();
+    let mut opts = Options { levels: Levels::unset(), ..Options::default() };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
