@@ -7,6 +7,9 @@ ovc build src/ -o out                   # every .ov under src/: one .sv per file
 ovc build -f files.f --in-place         # the inputs from a file list, each .sv written next to its source (ovc_files.f)
 ovc build src/ --root src -o out       # the root of the mirrored folders (a source outside it is an error)
 ovc audit src/                          # the async ports, same_domain, ignores, .wrap() truncations, lowered levels
+ovc fmt src/                            # the layout of the .ov files, in place (the design is checked to be the same)
+ovc fmt --check src/                    # lists the files that would change, and fails if there are some (for CI)
+ovc --keywords zed                      # the Open Verilog words, as the pattern of the editor grammars
 
 The sources of `build` are not preprocessed: a file list with an option such as `+incdir+DIR` is refused. To check plain
 .sv files with their include directories and defines, use `ovc lint -f files.f`.

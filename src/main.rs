@@ -119,6 +119,11 @@ fn main() -> ExitCode {
         let code = ovc::lint::main(&argv[1..]);
         return ExitCode::from(u8::try_from(code).unwrap_or(2));
     }
+    // `ovc fmt [--check] PATH...`: the layout of the .ov files (see `fmt`)
+    if argv.first().map(String::as_str) == Some("fmt") {
+        let code = ovc::fmt::main(&argv[1..]);
+        return ExitCode::from(u8::try_from(code).unwrap_or(2));
+    }
     // `ovc cover LOG...`: the coverage report of the simulation logs (see `cover`)
     if argv.first().map(String::as_str) == Some("cover") {
         let code = ovc::cover::main(&argv[1..]);

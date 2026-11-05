@@ -12,6 +12,7 @@ pub mod domains;
 pub mod elab;
 pub mod emit;
 pub mod error;
+pub mod fmt;
 pub mod hier;
 pub mod keywords;
 pub mod library;
