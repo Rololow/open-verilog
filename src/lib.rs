@@ -24,6 +24,7 @@ pub mod lint;
 pub mod probes;
 pub mod outputs;
 pub mod regmap;
+pub mod sim;
 pub mod testgen;
 pub mod toml;
 

@@ -11,6 +11,15 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
   `allow` is not an error in the editor.
 - `ovc-lsp` completes the names visible in the module of the cursor, the names of the workspace, and the keywords.
 - `ovc-lsp` lists the symbols of a file (document symbols) and of the workspace (workspace symbols, by name).
+- `ovc-lsp` finds the references of a name and renames it: a name of a module is renamed in the workspace, a signal or a
+  port in its module (a port's connections in the instances too).
+- `ovc-lsp` explains the methods (`.wrap()`, `.delay(n)`, ...) and the standard library entries on hover.
+- `ovc fmt [--check] PATH...`: the layout of the `.ov` files. Only the whitespace changes, and the tokens are checked
+  before a file is written. `--check` lists the files that would change and fails for CI.
+- `ovc test [--sim iverilog|verilator|questa] [--out DIR] PATH...`: the `test` blocks run with a simulator: the design and
+  the testbench are written to DIR, the simulator runs them, and the log gives the verdict of each test.
+- `ovc --keywords zed|vscode`: the Open Verilog words as the pattern of the editor grammars. The editors and the language
+  server share this list.
 
 ### Fixed
 - The `[lints]` table of `ovc.toml` had no effect on the command line: the default levels, given to the command line's

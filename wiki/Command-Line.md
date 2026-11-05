@@ -10,6 +10,8 @@ ovc audit src/                          # the async ports, same_domain, ignores,
 ovc fmt src/                            # the layout of the .ov files, in place (the design is checked to be the same)
 ovc fmt --check src/                    # lists the files that would change, and fails if there are some (for CI)
 ovc --keywords zed                      # the Open Verilog words, as the pattern of the editor grammars
+ovc test src/                          # the test blocks, run with a simulator (iverilog, verilator or vsim on the PATH)
+ovc test src/ --sim questa --out out/test  # the same with Questa; the design and the testbench are kept in out/test
 
 The sources of `build` are not preprocessed: a file list with an option such as `+incdir+DIR` is refused. To check plain
 .sv files with their include directories and defines, use `ovc lint -f files.f`.

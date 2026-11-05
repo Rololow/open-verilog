@@ -124,6 +124,17 @@ fn main() -> ExitCode {
         let code = ovc::fmt::main(&argv[1..]);
         return ExitCode::from(u8::try_from(code).unwrap_or(2));
     }
+    // `ovc test [--sim NAME] [--out DIR] PATH...`: the test blocks, run with a simulator (see `sim`)
+    if argv.first().map(String::as_str) == Some("test") {
+        return match run_tests(&argv[1..]) {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(msg) => {
+                eprintln!("{msg}");
+                ExitCode::from(2)
+            }
+        };
+    }
     // `ovc cover LOG...`: the coverage report of the simulation logs (see `cover`)
     if argv.first().map(String::as_str) == Some("cover") {
         let code = ovc::cover::main(&argv[1..]);
@@ -386,6 +397,41 @@ fn write_project(args: &Args, compiled: &ovc::Compiled, sv_files: &[PathBuf]) ->
 }
 
 /// A line of the file list: the path relative to the working directory when it is below it, absolute otherwise.
+/// `ovc test`: compiles the design with its `test` blocks, runs them with a simulator, and prints the log and the
+/// verdict. Returns whether every test passed.
+fn run_tests(args: &[String]) -> Result<bool, String> {
+    let mut sim = None;
+    let mut out = PathBuf::from("out/test");
+    let mut paths = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--sim" => {
+                let name = it.next().ok_or("ovc test: --sim needs a simulator (iverilog, verilator or questa)")?;
+                sim = Some(ovc::sim::Sim::from_name(name).ok_or(format!("ovc test: unknown simulator '{name}' (iverilog, verilator or questa)"))?);
+            }
+            "--out" => out = PathBuf::from(it.next().ok_or("ovc test: --out needs a folder")?),
+            _ => paths.push(arg.clone()),
+        }
+    }
+    if paths.is_empty() {
+        return Err("usage: ovc test [--sim iverilog|verilator|questa] [--out DIR] PATH...".into());
+    }
+    let sim = sim
+        .or_else(ovc::sim::Sim::detect)
+        .ok_or("ovc test: no simulator found on the PATH (iverilog, verilator or vsim): pass --sim")?;
+    let units = parse_units(&collect(&paths)?)?;
+    let sources: Vec<(String, String)> = units.iter().map(|(n, s, _)| (n.clone(), s.clone())).collect();
+    let parsed: Vec<File> = units.into_iter().map(|(_, _, f)| f).collect();
+    let options = ovc::Options { levels: ovc::diag::project_levels()?, ..ovc::Options::default() };
+    let compiled = ovc::compile_parsed(parsed, &options).map_err(|e| render(&e, &sources))?;
+    let testbench = compiled.tests_sv.as_ref().ok_or("ovc test: the input has no test blocks")?;
+    let run = ovc::sim::run(&compiled.sv, testbench, sim, &out)?;
+    print!("{}", run.log);
+    println!("ovc test: {} ({sim:?}, {})", if run.ok { "all tests passed" } else { "FAILED" }, out.display());
+    Ok(run.ok)
+}
+
 fn list_entry(path: &Path) -> String {
     let shown = std::env::current_dir().ok().and_then(|cwd| path.strip_prefix(&cwd).ok().map(Path::to_path_buf));
     shown.as_deref().unwrap_or(path).to_string_lossy().replace('\\', "/")
