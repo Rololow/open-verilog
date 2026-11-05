@@ -328,6 +328,8 @@ impl LanguageServer for Backend {
                 completion_provider: Some(CompletionOptions { trigger_characters: Some(vec![".".into()]), ..Default::default() }),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo { name: "ovc-lsp".into(), version: Some(env!("CARGO_PKG_VERSION").into()) }),
@@ -452,6 +454,53 @@ impl LanguageServer for Backend {
         Ok(Some(found))
     }
 
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let position = params.text_document_position;
+        let Some((name, file, pos, _)) = self.resolve(&position.text_document.uri, position.position).await else {
+            return Ok(None);
+        };
+        let units = {
+            let state = self.state.lock().await;
+            units(&state)
+        };
+        let len = name.chars().count();
+        let found = tokio::task::spawn_blocking(move || on_big_stack(move || occurrences(&units, &file, pos, &name)))
+            .await
+            .unwrap_or_default();
+        let locations = found
+            .into_iter()
+            .filter_map(|(p, (line, col))| Some(Location::new(Url::from_file_path(&p).ok()?, range_at(line, col, len))))
+            .collect();
+        Ok(Some(locations))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let position = params.text_document_position;
+        if !is_new_name(&params.new_name) {
+            return Err(tower_lsp::jsonrpc::Error::invalid_params(format!("'{}' cannot be a name", params.new_name)));
+        }
+        let Some((name, file, pos, _)) = self.resolve(&position.text_document.uri, position.position).await else {
+            return Ok(None);
+        };
+        let units = {
+            let state = self.state.lock().await;
+            units(&state)
+        };
+        let len = name.chars().count();
+        let found = tokio::task::spawn_blocking(move || on_big_stack(move || occurrences(&units, &file, pos, &name)))
+            .await
+            .unwrap_or_default();
+        let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+        for (p, (line, col)) in found {
+            let Ok(uri) = Url::from_file_path(&p) else { continue };
+            changes
+                .entry(uri)
+                .or_default()
+                .push(TextEdit { range: range_at(line, col, len), new_text: params.new_name.clone() });
+        }
+        Ok(Some(WorkspaceEdit { changes: Some(changes), ..Default::default() }))
+    }
+
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let position = params.text_document_position_params;
         let Some(path) = path_of(&position.text_document.uri) else { return Ok(None) };
@@ -558,6 +607,75 @@ fn follows_dot(text: &str, line: u32, character: u32) -> bool {
             && p[1].col <= col
             && col < p[1].col + p[1].text.chars().count()
     })
+}
+
+/// Where a declared name can be used: the lines of its module, and whether it is a port (its connections in the
+/// instances of other modules are then uses too). `None`: a module or a top-level name, used in the whole workspace.
+struct Scope {
+    lines: (usize, usize),
+    port: bool,
+}
+
+fn scope_of(text: &str, path: &Path, decl_line: usize, name: &str) -> Option<Scope> {
+    let file = ovc::parser::parse_file(text, &path.to_string_lossy()).ok()?;
+    if file.modules.iter().any(|m| m.name == name) {
+        return None;
+    }
+    let idx = file.modules.iter().rposition(|m| m.pos.0 <= decl_line)?;
+    let m = &file.modules[idx];
+    let port = m.ports.iter().any(|p| p.name == name);
+    let declared = port
+        || m.items.iter().any(|it| matches!(&it.kind, ItemKind::Decl(d) if d.decls.iter().any(|x| x.name == name)));
+    if !declared {
+        return None;
+    }
+    let end = file.modules.get(idx + 1).map_or(usize::MAX, |n| n.pos.0.saturating_sub(1));
+    Some(Scope { lines: (m.pos.0, end), port })
+}
+
+/// The uses of the declaration `name` at `decl` (in `decl_path`): (file, position), the declaration included. A `.name`
+/// that follows a value (`io.name`, a field or a method) is not a use; `.name(` in an instance is one, for a port.
+fn occurrences(units: &[(PathBuf, String)], decl_path: &Path, decl: Pos, name: &str) -> Vec<(PathBuf, Pos)> {
+    let scope = units
+        .iter()
+        .find(|(p, _)| p == decl_path)
+        .and_then(|(_, t)| scope_of(t, decl_path, decl.0, name));
+    let mut out = Vec::new();
+    for (path, text) in units {
+        let Ok(tokens) = lex(text, "") else { continue };
+        for (i, t) in tokens.iter().enumerate() {
+            if t.kind != Kind::Ident || t.text != name {
+                continue;
+            }
+            let after_dot = i > 0 && tokens[i - 1].text == ".";
+            // a port connection: `.name(` after `(`, `,` or `{`
+            let connection = after_dot
+                && i >= 2
+                && matches!(tokens[i - 2].text.as_str(), "(" | "," | "{")
+                && tokens.get(i + 1).is_some_and(|n| n.text == "(");
+            if after_dot && !connection {
+                continue;
+            }
+            let in_scope = match &scope {
+                None => true,
+                Some(s) => path == decl_path && (s.lines.0..=s.lines.1).contains(&t.line),
+            };
+            let is_connection_of_port = connection && scope.as_ref().is_some_and(|s| s.port);
+            if in_scope || is_connection_of_port || (connection && scope.is_none()) {
+                out.push((path.clone(), (t.line, t.col)));
+            }
+        }
+    }
+    out
+}
+
+/// Whether a name can be given to a declaration: an identifier that is not a word of the language.
+fn is_new_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let starts = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    starts
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && !keywords().any(|k| k == name)
 }
 
 /// The lint levels of the workspace: the `[lints]` of the `ovc.toml` of the first folder that has one.
@@ -749,6 +867,53 @@ mod tests {
         assert_eq!(levels.get(ovc::diag::Category::Width), ovc::diag::Level::Warn);
         assert_eq!(levels.get(ovc::diag::Category::Carry), ovc::diag::Level::Deny);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn units_of(files: &[(&str, &str)]) -> Vec<(PathBuf, String)> {
+        files.iter().map(|(p, t)| (PathBuf::from(p), t.to_string())).collect()
+    }
+
+    #[test]
+    fn a_signal_is_renamed_in_its_module_only() {
+        let a = "module A(input logic [7:0] x, output logic [7:0] y) {\n  logic [7:0] t;\n  assign t = x;\n  assign y = t;\n}\n";
+        let b = "module B(input logic [7:0] x) {\n  logic [7:0] t;\n  assign t = x;\n}\n";
+        let units = units_of(&[("/w/a.ov", a), ("/w/b.ov", b)]);
+        let found = occurrences(&units, Path::new("/w/a.ov"), (2, 3), "t");
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert!(found.iter().all(|(p, _)| p == &PathBuf::from("/w/a.ov")));
+    }
+
+    #[test]
+    fn a_port_is_renamed_with_its_connections_and_not_its_fields() {
+        let a = "module A(input logic [7:0] x, output logic [7:0] y) {\n  assign y = x;\n}\n";
+        let b = "module B(input logic [7:0] x) {\n  logic [7:0] z;\n  assign z = io.x;\n}\n";
+        let c = "module C(input logic [7:0] q) {\n  A a0(.x(q), .y());\n}\n";
+        let units = units_of(&[("/w/a.ov", a), ("/w/b.ov", b), ("/w/c.ov", c)]);
+        let found = occurrences(&units, Path::new("/w/a.ov"), (1, 1), "x");
+        let in_a = found.iter().filter(|(p, _)| p == &PathBuf::from("/w/a.ov")).count();
+        let in_c = found.iter().filter(|(p, _)| p == &PathBuf::from("/w/c.ov")).count();
+        assert_eq!(in_a, 2, "the port and its use: {found:?}");
+        assert_eq!(in_c, 1, "the connection .x(q): {found:?}");
+        assert!(found.iter().all(|(p, _)| p != &PathBuf::from("/w/b.ov")), "io.x is a field, not a use");
+    }
+
+    #[test]
+    fn a_module_name_is_renamed_in_the_workspace() {
+        let a = "module A(input logic x) {}\n";
+        let c = "module C(input logic q) {\n  A a0(.x(q));\n}\n";
+        let units = units_of(&[("/w/a.ov", a), ("/w/c.ov", c)]);
+        let found = occurrences(&units, Path::new("/w/a.ov"), (1, 1), "A");
+        assert_eq!(found.len(), 2, "the declaration and the instance: {found:?}");
+    }
+
+    #[test]
+    fn a_new_name_is_an_identifier_that_is_not_a_word() {
+        assert!(is_new_name("sum_2"));
+        assert!(is_new_name("_x"));
+        assert!(!is_new_name("2bad"));
+        assert!(!is_new_name("a-b"));
+        assert!(!is_new_name(""));
+        assert!(!is_new_name("module"));
     }
 
     #[test]
