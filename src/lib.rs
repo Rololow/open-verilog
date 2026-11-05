@@ -13,6 +13,7 @@ pub mod elab;
 pub mod emit;
 pub mod error;
 pub mod hier;
+pub mod keywords;
 pub mod library;
 pub mod lexer;
 pub mod parser;

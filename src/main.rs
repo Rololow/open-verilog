@@ -129,6 +129,18 @@ fn main() -> ExitCode {
         println!("ovc {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
+    // `ovc --keywords zed|vscode`: the Open Verilog words, as the pattern of an editor grammar (see `keywords`)
+    if argv.len() == 2 && argv[0] == "--keywords" {
+        match argv[1].as_str() {
+            "zed" => println!("{}", ovc::keywords::zed_pattern()),
+            "vscode" => println!("{}", ovc::keywords::vscode_alternation()),
+            other => {
+                eprintln!("ovc --keywords: unknown format '{other}' (zed or vscode)");
+                return ExitCode::FAILURE;
+            }
+        }
+        return ExitCode::SUCCESS;
+    }
     let args = match parse_args(argv) {
         Ok(a) => a,
         Err(msg) => {

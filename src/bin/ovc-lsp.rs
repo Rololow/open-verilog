@@ -396,7 +396,7 @@ impl LanguageServer for Backend {
             for (p, t) in &units {
                 names.extend(symbols_of(p, t).into_iter().map(|(n, _, k)| (n, completion_kind(k))));
             }
-            names.extend(KEYWORDS.iter().map(|k| (k.to_string(), CompletionItemKind::KEYWORD)));
+            names.extend(keywords().map(|k| (k.to_string(), CompletionItemKind::KEYWORD)));
             names
         };
         let names = tokio::task::spawn_blocking(move || on_big_stack(work)).await.unwrap_or_default();
@@ -571,12 +571,10 @@ fn levels_of(roots: &[PathBuf]) -> std::result::Result<Levels, String> {
 }
 
 /// The words of the language that complete at any position.
-const KEYWORDS: &[&str] = &[
-    "module", "input", "output", "inout", "master", "slave", "monitor", "logic", "reg", "wire", "int", "always_ff",
-    "always_comb", "assign", "if", "else", "for", "in", "match", "case", "fn", "return", "task", "val", "const", "bundle",
-    "struct", "enum", "pipeline", "stage", "reset", "clock", "domain", "same_domain", "async", "test", "probe", "config",
-    "isa", "regmap", "tie_off",
-];
+/// The words that complete at any position: the Open Verilog words and the SystemVerilog ones (see `keywords`).
+fn keywords() -> impl Iterator<Item = &'static str> {
+    ovc::keywords::OV_WORDS.iter().chain(ovc::keywords::SV_WORDS).copied()
+}
 
 /// The symbols a file declares, with their kind and position: modules, ports, signals, enums, structs, bundles, configs,
 /// functions, tasks, vals and constants.
