@@ -9,6 +9,11 @@
 //! - hover: the declaration line of the identifier under the cursor, with its file and line (the same lookup as the
 //!   go-to-definition).
 //!
+//! - the lint levels of the workspace's `ovc.toml` (its `[lints]` table) apply to the diagnostics, as they do to the CLI;
+//! - completion: the names visible in the module of the cursor, the names of the workspace, and the keywords;
+//! - document and workspace symbols: the modules, ports, signals, enums, structs, bundles, configs, functions, tasks,
+//!   vals and constants.
+//!
 //! Positions are the compiler's (1-based line and column); the protocol's are 0-based.
 
 use std::collections::{hash_map::DefaultHasher, HashMap, HashSet};
@@ -17,7 +22,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use ovc::ast::{File, Pos};
+use ovc::ast::{File, ItemKind, Pos};
+use ovc::diag::Levels;
 use ovc::lexer::{lex, Kind};
 use ovc::{compile_units, Options};
 use tokio::sync::Mutex;
@@ -120,10 +126,11 @@ fn parse_warning(text: &str) -> Option<(String, usize, usize, String)> {
 }
 
 /// The diagnostics of a compilation, per file.
-fn diagnostics(units: &[(PathBuf, String)]) -> HashMap<String, Vec<Diagnostic>> {
+fn diagnostics(units: &[(PathBuf, String)], levels: &Levels) -> HashMap<String, Vec<Diagnostic>> {
     let named: Vec<(String, String)> = units.iter().map(|(p, t)| (p.to_string_lossy().to_string(), t.clone())).collect();
     let mut out: HashMap<String, Vec<Diagnostic>> = HashMap::new();
-    match compile_units(&named, &Options::default()) {
+    let options = Options { levels: levels.clone(), ..Options::default() };
+    match compile_units(&named, &options) {
         Err(e) => {
             let diag = Diagnostic {
                 range: range_at(e.line, e.col, 1),
@@ -229,11 +236,18 @@ fn path_of(uri: &Url) -> Option<PathBuf> {
 
 /// Compiles the workspace and publishes its diagnostics (the files that are clean get an empty list).
 async fn publish(client: &Client, state: &Mutex<State>) {
-    let units = {
+    let (units, roots) = {
         let state = state.lock().await;
-        units(&state)
+        (units(&state), state.roots.clone())
     };
-    let per_file = tokio::task::spawn_blocking(move || on_big_stack(move || diagnostics(&units))).await.unwrap_or_default();
+    let levels = match levels_of(&roots) {
+        Ok(levels) => levels,
+        Err(message) => {
+            client.log_message(MessageType::ERROR, message).await;
+            Levels::default()
+        }
+    };
+    let per_file = tokio::task::spawn_blocking(move || on_big_stack(move || diagnostics(&units, &levels))).await.unwrap_or_default();
     let mut now = HashSet::new();
     for (file, diags) in per_file {
         let Ok(uri) = Url::from_file_path(&file) else { continue };
@@ -290,6 +304,9 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
                 definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                completion_provider: Some(CompletionOptions { trigger_characters: Some(vec![".".into()]), ..Default::default() }),
+                document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo { name: "ovc-lsp".into(), version: Some(env!("CARGO_PKG_VERSION").into()) }),
@@ -340,6 +357,78 @@ impl LanguageServer for Backend {
         let Ok(target) = Url::from_file_path(&file) else { return Ok(None) };
         let at = Position::new(line.saturating_sub(1) as u32, col.saturating_sub(1) as u32);
         Ok(Some(GotoDefinitionResponse::Scalar(Location::new(target, Range::new(at, at)))))
+    }
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        let position = params.text_document_position;
+        let Some(path) = path_of(&position.text_document.uri) else { return Ok(None) };
+        let (units, text) = {
+            let state = self.state.lock().await;
+            (units(&state), text_of(&state, &path))
+        };
+        let line = position.position.line as usize + 1;
+        let work = move || {
+            let mut names: Vec<(String, CompletionItemKind)> = Vec::new();
+            if let Some(text) = &text {
+                names.extend(names_in_scope(&path, text, line).into_iter().map(|(n, k)| (n, completion_kind(k))));
+            }
+            for (p, t) in &units {
+                names.extend(symbols_of(p, t).into_iter().map(|(n, _, k)| (n, completion_kind(k))));
+            }
+            names.extend(KEYWORDS.iter().map(|k| (k.to_string(), CompletionItemKind::KEYWORD)));
+            names
+        };
+        let names = tokio::task::spawn_blocking(move || on_big_stack(work)).await.unwrap_or_default();
+        // the names of the module come first: a name that is both in the module and in the workspace keeps its first entry
+        let mut seen = HashSet::new();
+        let items = names
+            .into_iter()
+            .filter(|(name, _)| seen.insert(name.clone()))
+            .map(|(label, kind)| CompletionItem { label, kind: Some(kind), ..Default::default() })
+            .collect();
+        Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    async fn document_symbol(&self, params: DocumentSymbolParams) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = params.text_document.uri;
+        let Some(path) = path_of(&uri) else { return Ok(None) };
+        let Some(text) = text_of(&*self.state.lock().await, &path) else { return Ok(None) };
+        let symbols = tokio::task::spawn_blocking(move || on_big_stack(move || symbols_of(&path, &text))).await.unwrap_or_default();
+        let found = symbols
+            .into_iter()
+            .map(|(name, pos, kind)| {
+                let range = range_at(pos.0, pos.1, name.chars().count());
+                symbol_info(name, kind, Location::new(uri.clone(), range))
+            })
+            .collect();
+        Ok(Some(DocumentSymbolResponse::Flat(found)))
+    }
+
+    async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
+        let query = params.query.to_lowercase();
+        let units = {
+            let state = self.state.lock().await;
+            units(&state)
+        };
+        let found = tokio::task::spawn_blocking(move || {
+            on_big_stack(move || {
+                let mut out = Vec::new();
+                for (path, text) in &units {
+                    let Ok(uri) = Url::from_file_path(path) else { continue };
+                    for (name, pos, kind) in symbols_of(path, text) {
+                        if name.to_lowercase().contains(&query) {
+                            let range = range_at(pos.0, pos.1, name.chars().count());
+                            out.push(symbol_info(name, kind, Location::new(uri.clone(), range)));
+                        }
+                    }
+                }
+                out.truncate(500);
+                out
+            })
+        })
+        .await
+        .unwrap_or_default();
+        Ok(Some(found))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -397,6 +486,96 @@ impl Backend {
     }
 }
 
+/// The lint levels of the workspace: the `[lints]` of the `ovc.toml` of the first folder that has one.
+fn levels_of(roots: &[PathBuf]) -> std::result::Result<Levels, String> {
+    for root in roots {
+        if let Ok(text) = std::fs::read_to_string(root.join("ovc.toml")) {
+            return Levels::from_manifest(&text);
+        }
+    }
+    Ok(Levels::default())
+}
+
+/// The words of the language that complete at any position.
+const KEYWORDS: &[&str] = &[
+    "module", "input", "output", "inout", "master", "slave", "monitor", "logic", "reg", "wire", "int", "always_ff",
+    "always_comb", "assign", "if", "else", "for", "in", "match", "case", "fn", "return", "task", "val", "const", "bundle",
+    "struct", "enum", "pipeline", "stage", "reset", "clock", "domain", "same_domain", "async", "test", "probe", "config",
+    "isa", "regmap", "tie_off",
+];
+
+/// The symbols a file declares, with their kind and position: modules, ports, signals, enums, structs, bundles, configs,
+/// functions, tasks, vals and constants.
+fn symbols_of(path: &Path, text: &str) -> Vec<(String, Pos, SymbolKind)> {
+    let mut out = Vec::new();
+    if let Ok(file) = ovc::parser::parse_file(text, &path.to_string_lossy()) {
+        for m in &file.modules {
+            out.push((m.name.clone(), m.pos, SymbolKind::MODULE));
+            out.extend(m.ports.iter().map(|p| (p.name.clone(), p.pos, SymbolKind::VARIABLE)));
+            for item in &m.items {
+                if let ItemKind::Decl(d) = &item.kind {
+                    let kind = if d.is_const { SymbolKind::CONSTANT } else { SymbolKind::VARIABLE };
+                    out.extend(d.decls.iter().map(|x| (x.name.clone(), item.pos, kind)));
+                }
+            }
+        }
+        out.extend(file.enums.iter().map(|e| (e.name.clone(), e.pos, SymbolKind::ENUM)));
+        out.extend(file.structs.iter().map(|s| (s.name.clone(), s.pos, SymbolKind::STRUCT)));
+        out.extend(file.bundles.iter().map(|b| (b.name.clone(), b.pos, SymbolKind::STRUCT)));
+        out.extend(file.configs.iter().map(|c| (c.name.clone(), c.pos, SymbolKind::CLASS)));
+    }
+    out.extend(keyword_symbols(text));
+    out
+}
+
+/// The functions, tasks, vals and constants of a file, found by their keyword (see `keyword_declarations`), with kind.
+fn keyword_symbols(text: &str) -> Vec<(String, Pos, SymbolKind)> {
+    let Ok(tokens) = lex(text, "") else { return Vec::new() };
+    tokens
+        .windows(2)
+        .filter(|pair| pair[0].kind == Kind::Ident && pair[1].kind == Kind::Ident)
+        .filter_map(|pair| {
+            let kind = match pair[0].text.as_str() {
+                "fn" | "task" => SymbolKind::FUNCTION,
+                "val" | "const" => SymbolKind::CONSTANT,
+                _ => return None,
+            };
+            Some((pair[1].text.clone(), (pair[0].line, pair[0].col), kind))
+        })
+        .collect()
+}
+
+/// The names visible at a line (1-based): the ports and declarations of the module that starts last before it. Empty
+/// when the file does not parse, which is the case while it is being typed.
+fn names_in_scope(path: &Path, text: &str, line: usize) -> Vec<(String, SymbolKind)> {
+    let Ok(file) = ovc::parser::parse_file(text, &path.to_string_lossy()) else { return Vec::new() };
+    let Some(m) = file.modules.iter().rfind(|m| m.pos.0 <= line) else { return Vec::new() };
+    let mut out: Vec<(String, SymbolKind)> = m.ports.iter().map(|p| (p.name.clone(), SymbolKind::VARIABLE)).collect();
+    for item in &m.items {
+        if let ItemKind::Decl(d) = &item.kind {
+            out.extend(d.decls.iter().map(|x| (x.name.clone(), SymbolKind::VARIABLE)));
+        }
+    }
+    out
+}
+
+fn completion_kind(kind: SymbolKind) -> CompletionItemKind {
+    match kind {
+        SymbolKind::MODULE => CompletionItemKind::MODULE,
+        SymbolKind::ENUM => CompletionItemKind::ENUM,
+        SymbolKind::STRUCT => CompletionItemKind::STRUCT,
+        SymbolKind::CLASS => CompletionItemKind::CLASS,
+        SymbolKind::FUNCTION => CompletionItemKind::FUNCTION,
+        SymbolKind::CONSTANT => CompletionItemKind::CONSTANT,
+        _ => CompletionItemKind::VARIABLE,
+    }
+}
+
+#[allow(deprecated)]
+fn symbol_info(name: String, kind: SymbolKind, location: Location) -> SymbolInformation {
+    SymbolInformation { name, kind, tags: None, deprecated: None, location, container_name: None }
+}
+
 /// The text of a line of a file (1-based), trimmed, if it is not empty.
 fn declaration_line(text: &str, line: usize) -> Option<String> {
     text.lines().nth(line.checked_sub(1)?).map(str::trim).filter(|l| !l.is_empty()).map(str::to_string)
@@ -452,6 +631,50 @@ mod tests {
 ", 2), None);
         assert_eq!(declaration_line("a", 3), None);
         assert_eq!(declaration_line("a", 0), None);
+    }
+
+    #[test]
+    fn the_symbols_of_a_file_have_their_kind() {
+        let src = "module Top(input logic a) {\n  logic [7:0] q;\n  const K = 4;\n}\nfn f(x) { return x; }\n";
+        let symbols = symbols_of(&PathBuf::from("t.ov"), src);
+        let kind = |name: &str| symbols.iter().find(|(n, _, _)| n == name).map(|(_, _, k)| *k);
+        assert_eq!(kind("Top"), Some(SymbolKind::MODULE));
+        assert_eq!(kind("a"), Some(SymbolKind::VARIABLE));
+        assert_eq!(kind("q"), Some(SymbolKind::VARIABLE));
+        assert_eq!(kind("K"), Some(SymbolKind::CONSTANT));
+        assert_eq!(kind("f"), Some(SymbolKind::FUNCTION));
+    }
+
+    #[test]
+    fn the_names_in_scope_are_those_of_the_module_of_the_line() {
+        let src = "module A(input logic x) {}\nmodule B(input logic y) {\n  logic z;\n}\n";
+        let names: Vec<String> = names_in_scope(&PathBuf::from("t.ov"), src, 3).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(names, vec!["y".to_string(), "z".to_string()]);
+    }
+
+    #[test]
+    fn the_lint_levels_of_the_manifest_reach_the_diagnostics() {
+        let src = "module N(input logic [7:0] a, output logic [3:0] y) {\n  assign y = a;\n}\n";
+        let units = vec![(PathBuf::from("/w/n.ov"), src.to_string())];
+        let has_error = |levels: &Levels| {
+            diagnostics(&units, levels).values().flatten().any(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+        };
+        assert!(has_error(&Levels::default()), "a width finding is an error by default");
+        let mut warn = Levels::default();
+        warn.set(ovc::diag::Category::Width, ovc::diag::Level::Warn);
+        assert!(!has_error(&warn));
+    }
+
+    #[test]
+    fn the_levels_are_read_from_the_manifest_of_the_first_folder_that_has_one() {
+        let dir = std::env::temp_dir().join("ovc_lsp_levels_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ovc.toml"), "[lints]\nwidth = \"warn\"\n").unwrap();
+        let levels = levels_of(std::slice::from_ref(&dir)).unwrap();
+        assert_eq!(levels.get(ovc::diag::Category::Width), ovc::diag::Level::Warn);
+        assert_eq!(levels.get(ovc::diag::Category::Carry), ovc::diag::Level::Deny);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

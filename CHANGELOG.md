@@ -7,6 +7,10 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 
 ### Added
 - `ovc-lsp` answers hover: the declaration line of the identifier under the cursor, with its file and line.
+- `ovc-lsp` applies the `[lints]` table of the workspace's `ovc.toml`, as the compiler does: a category at `warn` or
+  `allow` is not an error in the editor.
+- `ovc-lsp` completes the names visible in the module of the cursor, the names of the workspace, and the keywords.
+- `ovc-lsp` lists the symbols of a file (document symbols) and of the workspace (workspace symbols, by name).
 
 ## [0.1.21] - 2026-11-05
 
