@@ -44,7 +44,8 @@ parameter (`C.tables.exp_residual`).
 
 - diagnostics (errors and warnings, with positions), refreshed shortly after the last edit;
 - go to definition of modules, enums, structs, bundles, configs, functions and constants, in the same file first and
-  then in the others.
+  then in the others;
+- hover: the declaration line of the identifier under the cursor, with its file and line.
 
 The VS Code extension (`vscode-open-verilog`) starts it; any LSP client can.
 

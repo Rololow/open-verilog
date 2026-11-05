@@ -5,7 +5,9 @@
 //!   compilation waits for a short pause; on save and on open it runs at once;
 //! - go-to-definition: the declaration of the identifier under the cursor (module, enum, struct, bundle, config,
 //!   port, signal, fn, task, val or const), in the file it is written in first, then in the other files. The
-//!   declarations of each file are kept, and recomputed only when its text changes.
+//!   declarations of each file are kept, and recomputed only when its text changes;
+//! - hover: the declaration line of the identifier under the cursor, with its file and line (the same lookup as the
+//!   go-to-definition).
 //!
 //! Positions are the compiler's (1-based line and column); the protocol's are 0-based.
 
@@ -287,6 +289,7 @@ impl LanguageServer for Backend {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
                 definition_provider: Some(OneOf::Left(true)),
+                hover_provider: Some(HoverProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo { name: "ovc-lsp".into(), version: Some(env!("CARGO_PKG_VERSION").into()) }),
@@ -330,17 +333,42 @@ impl LanguageServer for Backend {
     }
 
     async fn goto_definition(&self, params: GotoDefinitionParams) -> Result<Option<GotoDefinitionResponse>> {
-        let uri = params.text_document_position_params.text_document.uri;
-        let position = params.text_document_position_params.position;
-        let Some(path) = path_of(&uri) else { return Ok(None) };
+        let position = params.text_document_position_params;
+        let Some((_, file, (line, col), _)) = self.resolve(&position.text_document.uri, position.position).await else {
+            return Ok(None);
+        };
+        let Ok(target) = Url::from_file_path(&file) else { return Ok(None) };
+        let at = Position::new(line.saturating_sub(1) as u32, col.saturating_sub(1) as u32);
+        Ok(Some(GotoDefinitionResponse::Scalar(Location::new(target, Range::new(at, at)))))
+    }
+
+    async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
+        let position = params.text_document_position_params;
+        let Some((name, file, (line, _), file_text)) = self.resolve(&position.text_document.uri, position.position).await else {
+            return Ok(None);
+        };
+        let Some(decl) = declaration_line(&file_text, line) else { return Ok(None) };
+        let file_name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let value = format!("```ovc
+{decl}
+```
+`{name}`, declared in `{file_name}` line {line}");
+        Ok(Some(Hover { contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }), range: None }))
+    }
+}
+
+impl Backend {
+    /// The identifier under a position, and where it is declared: (name, file, position, text of that file).
+    async fn resolve(&self, uri: &Url, position: Position) -> Option<(String, PathBuf, Pos, String)> {
+        let path = path_of(uri)?;
         let (units, cache, text) = {
             let state = self.state.lock().await;
             (units(&state), state.declared.clone(), text_of(&state, &path))
         };
-        let Some(text) = text else { return Ok(None) };
-        let Some(name) = ident_at(&text, position.line, position.character) else { return Ok(None) };
+        let name = ident_at(&text?, position.line, position.character)?;
 
         // the declarations of every file: from the cache while its text is the same, else read again
+        let search = name.clone();
         let work = move || {
             let mut fresh = Vec::new();
             let declared: Vec<(PathBuf, Vec<(String, Pos)>)> = units
@@ -357,17 +385,21 @@ impl LanguageServer for Backend {
                     }
                 })
                 .collect();
-            let found = find_definition(&name, &path, &declared);
+            let found = find_definition(&search, &path, &declared);
             (found, fresh)
         };
         let (found, fresh) = tokio::task::spawn_blocking(move || on_big_stack(work)).await.unwrap_or((None, Vec::new()));
         self.state.lock().await.declared.extend(fresh);
 
-        let Some((file, (line, col))) = found else { return Ok(None) };
-        let Ok(target) = Url::from_file_path(&file) else { return Ok(None) };
-        let at = Position::new(line.saturating_sub(1) as u32, col.saturating_sub(1) as u32);
-        Ok(Some(GotoDefinitionResponse::Scalar(Location::new(target, Range::new(at, at)))))
+        let (file, pos) = found?;
+        let file_text = text_of(&*self.state.lock().await, &file)?;
+        Some((name, file, pos, file_text))
     }
+}
+
+/// The text of a line of a file (1-based), trimmed, if it is not empty.
+fn declaration_line(text: &str, line: usize) -> Option<String> {
+    text.lines().nth(line.checked_sub(1)?).map(str::trim).filter(|l| !l.is_empty()).map(str::to_string)
 }
 
 #[tokio::main]
@@ -408,6 +440,18 @@ mod tests {
         let b = (PathBuf::from("/w/b.ov"), vec![("Adder".to_string(), (1, 1))]);
         let (file, pos) = find_definition("Adder", &PathBuf::from("/w/a.ov"), &[a, b]).unwrap();
         assert_eq!((file, pos), (PathBuf::from("/w/b.ov"), (1, 1)));
+    }
+
+    #[test]
+    fn the_declaration_line_is_the_trimmed_line_of_the_position() {
+        assert_eq!(declaration_line("a
+  logic [7:0] q;
+", 2).as_deref(), Some("logic [7:0] q;"));
+        assert_eq!(declaration_line("a
+
+", 2), None);
+        assert_eq!(declaration_line("a", 3), None);
+        assert_eq!(declaration_line("a", 0), None);
     }
 
     #[test]

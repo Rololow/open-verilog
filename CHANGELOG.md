@@ -5,6 +5,9 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 
 ## [Unreleased]
 
+### Added
+- `ovc-lsp` answers hover: the declaration line of the identifier under the cursor, with its file and line.
+
 ## [0.1.21] - 2026-11-05
 
 ### Added
