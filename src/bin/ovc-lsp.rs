@@ -217,17 +217,16 @@ fn declarations_of(path: &Path, text: &str) -> Vec<(String, Pos)> {
     found
 }
 
-/// The declaration of `name`: in the file of the use first, then in the others. `declared` holds every file's.
-fn find_definition(name: &str, here: &Path, declared: &[(PathBuf, Vec<(String, Pos)>)]) -> Option<(PathBuf, Pos)> {
-    let in_file = |path: &PathBuf| {
-        declared
-            .iter()
-            .filter(|(p, _)| p == path)
-            .flat_map(|(p, found)| found.iter().map(move |(n, pos)| (p.clone(), n, *pos)))
-            .find(|(_, n, _)| n.as_str() == name)
-            .map(|(p, _, pos)| (p, pos))
+/// The declaration of `name`: in the file of the use first, then in the others (in path order). `declared` holds every
+/// file's.
+fn find_definition(name: &str, here: &Path, declared: &HashMap<PathBuf, Declared>) -> Option<(PathBuf, Pos)> {
+    let in_file = |path: &Path| {
+        let (_, found) = declared.get(path)?;
+        found.iter().find(|(n, _)| n.as_str() == name).map(|(_, pos)| (path.to_path_buf(), *pos))
     };
-    in_file(&here.to_path_buf()).or_else(|| declared.iter().find_map(|(p, _)| in_file(p)))
+    let mut paths: Vec<&PathBuf> = declared.keys().collect();
+    paths.sort();
+    in_file(here).or_else(|| paths.into_iter().find_map(|p| in_file(p)))
 }
 
 fn path_of(uri: &Url) -> Option<PathBuf> {
@@ -235,10 +234,11 @@ fn path_of(uri: &Url) -> Option<PathBuf> {
 }
 
 /// Compiles the workspace and publishes its diagnostics (the files that are clean get an empty list).
+/// The declarations are kept here as well, so that go-to-definition and hover do not read the workspace again.
 async fn publish(client: &Client, state: &Mutex<State>) {
-    let (units, roots) = {
+    let (units, roots, cache) = {
         let state = state.lock().await;
-        (units(&state), state.roots.clone())
+        (units(&state), state.roots.clone(), state.declared.clone())
     };
     let levels = match levels_of(&roots) {
         Ok(levels) => levels,
@@ -247,7 +247,28 @@ async fn publish(client: &Client, state: &Mutex<State>) {
             Levels::default()
         }
     };
-    let per_file = tokio::task::spawn_blocking(move || on_big_stack(move || diagnostics(&units, &levels))).await.unwrap_or_default();
+    let paths: HashSet<PathBuf> = units.iter().map(|(p, _)| p.clone()).collect();
+    // the declarations of the files whose text changed since they were read
+    let (per_file, fresh) = tokio::task::spawn_blocking(move || {
+        on_big_stack(move || {
+            let per_file = diagnostics(&units, &levels);
+            let mut fresh = Vec::new();
+            for (p, t) in &units {
+                let hash = text_hash(t);
+                if !matches!(cache.get(p), Some((h, _)) if *h == hash) {
+                    fresh.push((p.clone(), (hash, declarations_of(p, t))));
+                }
+            }
+            (per_file, fresh)
+        })
+    })
+    .await
+    .unwrap_or_default();
+    {
+        let mut state = state.lock().await;
+        state.declared.retain(|p, _| paths.contains(p));
+        state.declared.extend(fresh);
+    }
     let mut now = HashSet::new();
     for (file, diags) in per_file {
         let Ok(uri) = Url::from_file_path(&file) else { continue };
@@ -433,16 +454,36 @@ impl LanguageServer for Backend {
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let position = params.text_document_position_params;
-        let Some((name, file, (line, _), file_text)) = self.resolve(&position.text_document.uri, position.position).await else {
-            return Ok(None);
+        let Some(path) = path_of(&position.text_document.uri) else { return Ok(None) };
+        let (line0, character) = (position.position.line, position.position.character);
+        let text = {
+            let state = self.state.lock().await;
+            text_of(&state, &path)
         };
-        let Some(decl) = declaration_line(&file_text, line) else { return Ok(None) };
-        let file_name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        let value = format!("```ovc
-{decl}
-```
-`{name}`, declared in `{file_name}` line {line}");
-        Ok(Some(Hover { contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }), range: None }))
+        let Some(text) = text else { return Ok(None) };
+        let Some(name) = ident_at(&text, line0, character) else { return Ok(None) };
+        let dotted = follows_dot(&text, line0, character);
+        let markdown = |value: String| {
+            Ok(Some(Hover { contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }), range: None }))
+        };
+
+        // a method or function of the language: what it does (a name after a dot is a method, `tie_off(b)` a function)
+        if let Some((_, signature, doc)) = BUILTINS.iter().find(|(n, s, _)| *n == name && s.starts_with('.') == dotted) {
+            return markdown(format!("```ovc\n{signature}\n```\n{doc}"));
+        }
+        // a declaration of the workspace: its line, as the compiler sees it
+        if let Some((name, file, (line, _), file_text)) = self.resolve(&position.text_document.uri, position.position).await {
+            if let Some(decl) = declaration_line(&file_text, line) {
+                let file_name = file.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                return markdown(format!("```ovc\n{decl}\n```\n`{name}`, declared in `{file_name}` line {line}"));
+            }
+        }
+        // an entry of the standard library, when the workspace does not declare the name (the workspace's wins)
+        if let Some((decl, doc)) = stdlib_entry(&name) {
+            let doc = if doc.is_empty() { String::new() } else { format!("\n\n{doc}") };
+            return markdown(format!("```ovc\n{decl}\n```\nStandard library{doc}"));
+        }
+        Ok(None)
     }
 }
 
@@ -450,40 +491,73 @@ impl Backend {
     /// The identifier under a position, and where it is declared: (name, file, position, text of that file).
     async fn resolve(&self, uri: &Url, position: Position) -> Option<(String, PathBuf, Pos, String)> {
         let path = path_of(uri)?;
-        let (units, cache, text) = {
+        // the declarations of the workspace are those of the last compilation (see `publish`): no file is read here
+        let (name, found) = {
             let state = self.state.lock().await;
-            (units(&state), state.declared.clone(), text_of(&state, &path))
+            let name = ident_at(&text_of(&state, &path)?, position.line, position.character)?;
+            let found = find_definition(&name, &path, &state.declared);
+            (name, found)
         };
-        let name = ident_at(&text?, position.line, position.character)?;
-
-        // the declarations of every file: from the cache while its text is the same, else read again
-        let search = name.clone();
-        let work = move || {
-            let mut fresh = Vec::new();
-            let declared: Vec<(PathBuf, Vec<(String, Pos)>)> = units
-                .iter()
-                .map(|(p, t)| {
-                    let hash = text_hash(t);
-                    match cache.get(p) {
-                        Some((h, found)) if *h == hash => (p.clone(), found.clone()),
-                        _ => {
-                            let found = declarations_of(p, t);
-                            fresh.push((p.clone(), (hash, found.clone())));
-                            (p.clone(), found)
-                        }
-                    }
-                })
-                .collect();
-            let found = find_definition(&search, &path, &declared);
-            (found, fresh)
-        };
-        let (found, fresh) = tokio::task::spawn_blocking(move || on_big_stack(work)).await.unwrap_or((None, Vec::new()));
-        self.state.lock().await.declared.extend(fresh);
-
         let (file, pos) = found?;
         let file_text = text_of(&*self.state.lock().await, &file)?;
         Some((name, file, pos, file_text))
     }
+}
+
+/// The standard library's source: the doc of an entry is the comment above its declaration.
+const STDLIB: &str = include_str!("../stdlib/stdlib.ov");
+
+/// The methods and functions of the language, for the hover: (name, signature, what it does). A signature that starts
+/// with a dot is a method (it is explained after a dot), the others are functions.
+const BUILTINS: &[(&str, &str, &str)] = &[
+    ("wrap", ".wrap()", "marks a truncation as intended: the arithmetic under it is computed exactly, then truncated to the width of the target. Without it, a value wider than its target is an error (the `width` and `carry` checks, `deny` by default)."),
+    ("delay", ".delay(n)", "the value delayed by `n` clock cycles: a chain of `n` registers (`delay(0)` is the value itself). The module needs its `clock`."),
+    ("reverse", ".reverse()", "the bits in reverse order."),
+    ("fill", ".fill(n)", "the value repeated `n` times, as `{n{value}}`."),
+    ("zext", ".zext(w)", "zero-extension to `w` bits."),
+    ("sext", ".sext(w)", "sign-extension to `w` bits."),
+    ("msb", ".msb()", "the first (most significant) bit."),
+    ("lsb", ".lsb()", "the last (least significant) bit."),
+    ("list", ".list()", "turns an array signal into a list known at compile time: `v[0]`, `v[1]`, ... A list has `map`, `filter`, `reduce` and `tree_reduce`."),
+    ("map", ".map(f)", "applies `f` to each element of a list, at compile time."),
+    ("filter", ".filter(f)", "keeps the elements of a list for which `f` holds, at compile time."),
+    ("reduce", ".reduce(op)", "combines the elements of a list as a chain: `((a0 op a1) op a2) ...`."),
+    ("tree_reduce", ".tree_reduce(op)", "combines the elements of a list as a balanced tree instead of a chain (for four inputs: `in[0] + in[1] + (in[2] + in[3])`). The tree is built at elaboration."),
+    ("as", ".as(S)", "a view of the bits of the value as the struct or instruction format `S`; its fields are read by name. The value must be as wide as `S`."),
+    ("tie_off", "tie_off(b)", "gives the idle value to a master bundle that is not driven. A module output that nothing drives is an error: drive it, or tie it off."),
+];
+
+/// Whether a line declares `name` as a module, bundle, struct, enum or function.
+fn declares(line: &str, name: &str) -> bool {
+    let mut words = line.trim_start().split(|c: char| !(c.is_alphanumeric() || c == '_')).filter(|w| !w.is_empty());
+    matches!(words.next(), Some("module" | "bundle" | "struct" | "enum" | "fn")) && words.next() == Some(name)
+}
+
+/// A standard-library entry: its declaration line, and the comment above it.
+fn stdlib_entry(name: &str) -> Option<(String, String)> {
+    let lines: Vec<&str> = STDLIB.lines().collect();
+    let at = lines.iter().position(|l| declares(l, name))?;
+    let mut doc: Vec<&str> = lines[..at]
+        .iter()
+        .rev()
+        .take_while(|l| l.starts_with("//"))
+        .map(|l| l.trim_start_matches('/').trim())
+        .collect();
+    doc.reverse();
+    Some((lines[at].trim().trim_end_matches('{').trim_end().to_string(), doc.join(" ")))
+}
+
+/// Whether the identifier at a position follows a `.` (a method, or a field).
+fn follows_dot(text: &str, line: u32, character: u32) -> bool {
+    let Ok(tokens) = lex(text, "") else { return false };
+    let (line, col) = (line as usize + 1, character as usize + 1);
+    tokens.windows(2).any(|p| {
+        p[0].text == "."
+            && p[1].kind == Kind::Ident
+            && p[1].line == line
+            && p[1].col <= col
+            && col < p[1].col + p[1].text.chars().count()
+    })
 }
 
 /// The lint levels of the workspace: the `[lints]` of the `ovc.toml` of the first folder that has one.
@@ -615,9 +689,11 @@ mod tests {
 
     #[test]
     fn a_module_is_found_in_another_file() {
-        let a = (PathBuf::from("/w/a.ov"), vec![("Top".to_string(), (1, 1))]);
-        let b = (PathBuf::from("/w/b.ov"), vec![("Adder".to_string(), (1, 1))]);
-        let (file, pos) = find_definition("Adder", &PathBuf::from("/w/a.ov"), &[a, b]).unwrap();
+        let declared: HashMap<PathBuf, Declared> = HashMap::from([
+            (PathBuf::from("/w/a.ov"), (0, vec![("Top".to_string(), (1, 1))])),
+            (PathBuf::from("/w/b.ov"), (0, vec![("Adder".to_string(), (1, 1))])),
+        ]);
+        let (file, pos) = find_definition("Adder", &PathBuf::from("/w/a.ov"), &declared).unwrap();
         assert_eq!((file, pos), (PathBuf::from("/w/b.ov"), (1, 1)));
     }
 
@@ -675,6 +751,22 @@ mod tests {
         assert_eq!(levels.get(ovc::diag::Category::Width), ovc::diag::Level::Warn);
         assert_eq!(levels.get(ovc::diag::Category::Carry), ovc::diag::Level::Deny);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_standard_library_entry_has_the_comment_above_it_as_its_doc() {
+        let (decl, doc) = stdlib_entry("Sync").unwrap();
+        assert!(decl.starts_with("module Sync<"), "{decl}");
+        assert!(doc.contains("Two-flop synchronizer"), "{doc}");
+        assert!(stdlib_entry("NoSuchEntry").is_none());
+    }
+
+    #[test]
+    fn a_name_after_a_dot_is_a_method() {
+        let src = "module M(input logic [7:0] a, output logic [7:0] y) {\n  assign y = (a + 1).wrap();\n}\n";
+        assert!(follows_dot(src, 1, 21), "the 'w' of wrap follows the dot");
+        assert!(!follows_dot(src, 1, 14), "the 'a' is not after a dot");
+        assert!(BUILTINS.iter().any(|(n, s, _)| *n == "wrap" && s.starts_with('.')));
     }
 
     #[test]
