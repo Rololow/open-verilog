@@ -40,7 +40,7 @@ fn single_stage_has_no_registers() {
   clock clk;
   reset rst;
 
-      stage only { assign y = d + 1; }
+      stage only { assign y = (d + 1).wrap(); }
     }";
     let out = ovc::compile_full(src, "one.ov").unwrap();
     assert!(out.sv.contains("assign ov_valid_only = 1'b1;"));

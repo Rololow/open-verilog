@@ -13,6 +13,10 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 - `ovc-lsp` lists the symbols of a file (document symbols) and of the workspace (workspace symbols, by name).
 - `ovc-lsp` finds the references of a name and renames it: a name of a module is renamed in the workspace, a signal or a
   port in its module (a port's connections in the instances too).
+- `ovc-lsp` shows the category of each finding as its code, and links it to its section of the wiki's `Lints` page
+  (the rule and the correct way past it).
+- `ovc-lsp` is faster on a project: a file is parsed again only when its text changes, and a project whose texts and
+  lint levels did not change is not compiled again. The design is still elaborated as a whole when one file changes.
 - `ovc-lsp` explains the methods (`.wrap()`, `.delay(n)`, ...) and the standard library entries on hover.
 - `ovc fmt [--check] PATH...`: the layout of the `.ov` files. Only the whitespace changes, and the tokens are checked
   before a file is written. `--check` lists the files that would change and fails for CI.
@@ -22,6 +26,10 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
   server share this list.
 
 ### Fixed
+- The bit-loss checks (`width`, `carry`, `sizing`, `sign`) saw neither the statements of a pipeline stage, nor the
+  initialisers of declarations (`logic [7:0] a = d + 1;`), nor the signals a pipeline lowering declares. They now do.
+  Such a design is refused where it used to compile: write the truncation with `.wrap()`.
+- A `.wrap()` exempts its own assignment only. It used to exempt every assignment to the same signal in the module.
 - The `[lints]` table of `ovc.toml` had no effect on the command line: the default levels, given to the command line's
   overrides, overruled it (`width = "warn"` was still an error). Only the categories named on the command line now
   overrule the manifest.

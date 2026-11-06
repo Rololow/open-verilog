@@ -58,11 +58,13 @@ pub fn undriven_outputs(modules: &[Module]) -> Vec<Error> {
 /// The truncations written on purpose in the source, by module (without its specialisation).
 #[derive(Default)]
 pub struct Wrapped {
-    /// The targets of an assignment with `.wrap()`: (module, signal).
-    signals: HashSet<(String, String)>,
+    /// The assignments with `.wrap()`: (module, signal, position of the assignment). The exemption is for that
+    /// assignment only: another assignment to the same signal still needs its own `.wrap()`.
+    signals: HashSet<(String, String, Pos)>,
     /// The targets among `signals` that are declared or assigned inside a generate loop: the elaboration names each
-    /// of their copies with the loop's indices (`penalty` is `penalty_0`, `penalty_1`...).
-    loop_signals: HashSet<(String, String)>,
+    /// of their copies with the loop's indices (`penalty` is `penalty_0`, `penalty_1`...). Their copies share the
+    /// position of the assignment in the source.
+    loop_signals: HashSet<(String, String, Pos)>,
     /// The connections with `.wrap()`: (module, instance, port).
     ports: HashSet<(String, String, String)>,
 }
@@ -79,18 +81,18 @@ pub fn wrapped_in(file: &File) -> Wrapped {
 fn scan_wrapped(module: &str, items: &[Item], in_loop: bool, w: &mut Wrapped) {
     for it in items {
         match &it.kind {
-            ItemKind::ContAssign { lhs, rhs } => mark(module, lhs, rhs, in_loop, w),
+            ItemKind::ContAssign { lhs, rhs } => mark(module, lhs, rhs, in_loop, it.pos, w),
             // `wire T x = e;` is an assignment of `e` to `x`
             ItemKind::Decl(d) => {
                 for x in &d.decls {
                     if let Some(e) = &x.init {
-                        mark(module, &Expr::Ident(x.name.clone(), (0, 0)), e, in_loop, w);
+                        mark(module, &Expr::Ident(x.name.clone(), (0, 0)), e, in_loop, it.pos, w);
                     }
                 }
             }
             ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
-                for (lhs, rhs, _, _) in assignments(body) {
-                    mark(module, lhs, rhs, in_loop, w);
+                for (lhs, rhs, _, pos) in assignments(body) {
+                    mark(module, lhs, rhs, in_loop, pos, w);
                 }
             }
             ItemKind::Instance(i) => {
@@ -126,14 +128,14 @@ fn flat_name(e: &Expr) -> Option<String> {
     }
 }
 
-fn mark(module: &str, lhs: &Expr, rhs: &Expr, in_loop: bool, w: &mut Wrapped) {
+fn mark(module: &str, lhs: &Expr, rhs: &Expr, in_loop: bool, pos: Pos, w: &mut Wrapped) {
     if has_wrap(rhs) {
         for p in parts(lhs) {
             if let Some(n) = flat_name(p) {
                 if in_loop {
-                    w.loop_signals.insert((module.to_string(), n.clone()));
+                    w.loop_signals.insert((module.to_string(), n.clone(), pos));
                 }
-                w.signals.insert((module.to_string(), n));
+                w.signals.insert((module.to_string(), n, pos));
             }
         }
     }
@@ -153,7 +155,10 @@ fn flatten(items: &[Item]) -> Vec<Item> {
     let mut out = Vec::new();
     for it in items {
         match &it.kind {
-            ItemKind::GenFor { body, .. } | ItemKind::GenIf { then: body, .. } => out.extend(flatten(body)),
+            // the statements of a pipeline stage are the module's own: they are checked like the others
+            ItemKind::GenFor { body, .. } | ItemKind::GenIf { then: body, .. } | ItemKind::Stage { items: body, .. } => {
+                out.extend(flatten(body))
+            }
             _ => out.push(it.clone()),
         }
     }
@@ -341,14 +346,25 @@ fn check_widths(m: &Module, env: Option<&Env>, by_name: &HashMap<&str, &Module>,
     for it in &m.items {
         match &it.kind {
             ItemKind::ContAssign { lhs, rhs } => {
-                if !target_wrapped(&key, lhs, wrapped) {
+                if !target_wrapped(&key, lhs, it.pos, wrapped) {
                     lint_assign(m, env, lhs, rhs, it.pos, out);
                 }
             }
             ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
                 for (lhs, rhs, _, pos) in assignments(body) {
-                    if !target_wrapped(&key, lhs, wrapped) {
+                    if !target_wrapped(&key, lhs, pos, wrapped) {
                         lint_assign(m, env, lhs, rhs, pos, out);
+                    }
+                }
+            }
+            // `logic [7:0] a = d + 1;` is an assignment of `d + 1` to `a`
+            ItemKind::Decl(d) => {
+                for x in &d.decls {
+                    if let Some(init) = &x.init {
+                        let lhs = Expr::Ident(x.name.clone(), (0, 0));
+                        if !target_wrapped(&key, &lhs, it.pos, wrapped) {
+                            lint_assign(m, env, &lhs, init, it.pos, out);
+                        }
                     }
                 }
             }
@@ -506,20 +522,20 @@ fn sign_expr(m: &Module, env: &Env, e: &Expr, modular: Option<u32>, pos: Pos, ou
 fn check_signs(m: &Module, env: Option<&Env>, wrapped: &Wrapped, out: &mut Vec<String>) {
     let Some(env) = env else { return };
     let key = base_module(&m.name);
-    let modular = |lhs: &Expr| if target_wrapped(&key, lhs, wrapped) { sized(lhs, env) } else { None };
+    let modular = |lhs: &Expr, pos: Pos| if target_wrapped(&key, lhs, pos, wrapped) { sized(lhs, env) } else { None };
     for it in &m.items {
         match &it.kind {
-            ItemKind::ContAssign { lhs, rhs } => sign_expr(m, env, rhs, modular(lhs), it.pos, out),
+            ItemKind::ContAssign { lhs, rhs } => sign_expr(m, env, rhs, modular(lhs, it.pos), it.pos, out),
             ItemKind::Decl(d) => {
                 for x in &d.decls {
                     if let Some(init) = &x.init {
-                        sign_expr(m, env, init, modular(&Expr::Ident(x.name.clone(), (0, 0))), it.pos, out);
+                        sign_expr(m, env, init, modular(&Expr::Ident(x.name.clone(), (0, 0)), it.pos), it.pos, out);
                     }
                 }
             }
             ItemKind::AlwaysComb(body) | ItemKind::Always { body, .. } => {
                 for (lhs, rhs, _, pos) in assignments(body) {
-                    sign_expr(m, env, rhs, modular(lhs), pos, out);
+                    sign_expr(m, env, rhs, modular(lhs, pos), pos, out);
                 }
             }
             _ => {}
@@ -586,18 +602,19 @@ fn check_sizes(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
     }
 }
 
-fn target_wrapped(module: &str, lhs: &Expr, wrapped: &Wrapped) -> bool {
-    parts(lhs).into_iter().filter_map(base).any(|n| is_wrapped(module, &n, wrapped))
+fn target_wrapped(module: &str, lhs: &Expr, pos: Pos, wrapped: &Wrapped) -> bool {
+    parts(lhs).into_iter().filter_map(base).any(|n| is_wrapped(module, &n, pos, wrapped))
 }
 
 /// Whether the elaborated signal `name` is a target written with `.wrap()`. A signal of a generate loop is named with
 /// the loop's indices (`penalty_0`, or `x_1_2` in nested loops): it matches its source name followed by indices.
-fn is_wrapped(module: &str, name: &str, wrapped: &Wrapped) -> bool {
-    if wrapped.signals.contains(&(module.to_string(), name.to_string())) {
+fn is_wrapped(module: &str, name: &str, pos: Pos, wrapped: &Wrapped) -> bool {
+    if wrapped.signals.contains(&(module.to_string(), name.to_string(), pos)) {
         return true;
     }
-    wrapped.loop_signals.iter().any(|(m, source)| {
+    wrapped.loop_signals.iter().any(|(m, source, at)| {
         m == module
+            && *at == pos
             && name
                 .strip_prefix(source.as_str())
                 .and_then(|rest| rest.strip_prefix('_'))

@@ -1132,6 +1132,18 @@ impl<'a> Design<'a> {
             let lowered = pipeline::lower(&module, ctx.file, self.asserts, &directives, &bundle_signals)?;
             self.pipelines.push(lowered.table);
             self.warnings.extend(lowered.warnings);
+            // the signals the lowering declares (the copies of the stage values, `a__s1`) get their widths too, and the
+            // environment is kept for the checks of the lowered module (its widths are checked)
+            for it in &lowered.module.items {
+                if let ItemKind::Decl(d) = &it.kind {
+                    for x in &d.decls {
+                        if env.signal(&x.name).is_none() {
+                            env.define_signal(&x.name, d.dtype.clone(), x.dims.clone());
+                        }
+                    }
+                }
+            }
+            self.envs.insert(name.to_string(), env.clone());
             return Ok(lowered.module);
         }
         // the environment of the module is kept: the tests that drive it resolve its bundle fields and structs

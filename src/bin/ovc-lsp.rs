@@ -25,7 +25,7 @@ use std::time::Duration;
 use ovc::ast::{File, ItemKind, Pos};
 use ovc::diag::Levels;
 use ovc::lexer::{lex, Kind};
-use ovc::{compile_units, Options};
+use ovc::{compile_parsed, Options};
 use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -49,6 +49,10 @@ struct State {
     declared: HashMap<PathBuf, Declared>,
     /// Counts the edits: a compilation scheduled by an edit runs only if no edit came after it.
     generation: u64,
+    /// The parsed files, by path, while their text does not change.
+    parsed: Parsed,
+    /// The last compilation: its key and its diagnostics. A project that did not change is not compiled again.
+    last: Option<(u64, HashMap<String, Vec<Diagnostic>>)>,
 }
 
 struct Backend {
@@ -125,18 +129,72 @@ fn parse_warning(text: &str) -> Option<(String, usize, usize, String)> {
     Some((path, line, col, message.to_string()))
 }
 
+/// The page of the wiki that explains the lints.
+const LINTS_PAGE: &str = "https://github.com/Rololow/open-verilog/wiki/Lints";
+
+/// The code of a finding (its category) and the link to the section of the wiki that explains it.
+fn why(message: &str) -> (Option<NumberOrString>, Option<CodeDescription>) {
+    let category = ovc::diag::Category::of_message(message);
+    let href = Url::parse(&format!("{LINTS_PAGE}#{}", category.anchor())).ok();
+    (Some(NumberOrString::String(category.as_str().to_string())), href.map(|href| CodeDescription { href }))
+}
+
 /// The diagnostics of a compilation, per file.
-fn diagnostics(units: &[(PathBuf, String)], levels: &Levels) -> HashMap<String, Vec<Diagnostic>> {
-    let named: Vec<(String, String)> = units.iter().map(|(p, t)| (p.to_string_lossy().to_string(), t.clone())).collect();
+/// The parsed files of the project, by path, with the hash of the text each one was parsed from.
+type Parsed = HashMap<PathBuf, (u64, File)>;
+
+/// Files parsed by a compilation, to be kept in `Parsed`.
+type Fresh = Vec<(PathBuf, (u64, File))>;
+
+/// The key of a compilation: the texts and the levels. The same key gives the same diagnostics.
+fn project_key(units: &[(PathBuf, String)], levels: &Levels) -> u64 {
+    let mut texts: Vec<(&PathBuf, u64)> = units.iter().map(|(p, t)| (p, text_hash(t))).collect();
+    texts.sort();
+    let mut hasher = DefaultHasher::new();
+    texts.hash(&mut hasher);
+    format!("{:?}", ovc::diag::ALL.map(|c| levels.get(c))).hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The files of the project, parsed: a file whose text is the one it was parsed from is not parsed again. The files
+/// parsed now are returned with the hash of their text, to be kept.
+fn parse_changed(units: &[(PathBuf, String)], parsed: &Parsed, fresh: &mut Fresh) -> ovc::error::Result<Vec<File>> {
+    units
+        .iter()
+        .map(|(path, text)| {
+            let hash = text_hash(text);
+            match parsed.get(path) {
+                Some((h, file)) if *h == hash => Ok(file.clone()),
+                _ => {
+                    let file = ovc::parser::parse_file(text, &path.to_string_lossy())?;
+                    fresh.push((path.clone(), (hash, file.clone())));
+                    Ok(file)
+                }
+            }
+        })
+        .collect()
+}
+
+/// The diagnostics of a compilation, per file, and the files that were parsed to make it.
+fn diagnostics(
+    units: &[(PathBuf, String)],
+    levels: &Levels,
+    parsed: &Parsed,
+) -> (HashMap<String, Vec<Diagnostic>>, Fresh) {
     let mut out: HashMap<String, Vec<Diagnostic>> = HashMap::new();
+    let mut fresh = Vec::new();
     let options = Options { levels: levels.clone(), ..Options::default() };
-    match compile_units(&named, &options) {
+    let result = parse_changed(units, parsed, &mut fresh).and_then(|files| compile_parsed(files, &options));
+    match result {
         Err(e) => {
+            let (code, code_description) = why(&e.message);
             let diag = Diagnostic {
                 range: range_at(e.line, e.col, 1),
                 severity: Some(DiagnosticSeverity::ERROR),
                 source: Some("ovc".into()),
                 message: e.message.clone(),
+                code,
+                code_description,
                 ..Default::default()
             };
             out.entry(e.file.clone()).or_default().push(diag);
@@ -144,11 +202,14 @@ fn diagnostics(units: &[(PathBuf, String)], levels: &Levels) -> HashMap<String, 
         Ok(compiled) => {
             for warning in &compiled.warnings {
                 if let Some((path, line, col, message)) = parse_warning(warning) {
+                    let (code, code_description) = why(&message);
                     let diag = Diagnostic {
                         range: range_at(line, col, 1),
                         severity: Some(DiagnosticSeverity::WARNING),
                         source: Some("ovc".into()),
                         message,
+                        code,
+                        code_description,
                         ..Default::default()
                     };
                     out.entry(path).or_default().push(diag);
@@ -156,7 +217,7 @@ fn diagnostics(units: &[(PathBuf, String)], levels: &Levels) -> HashMap<String, 
             }
         }
     }
-    out
+    (out, fresh)
 }
 
 /// The identifier under a position (0-based line and character), if there is one.
@@ -236,9 +297,9 @@ fn path_of(uri: &Url) -> Option<PathBuf> {
 /// Compiles the workspace and publishes its diagnostics (the files that are clean get an empty list).
 /// The declarations are kept here as well, so that go-to-definition and hover do not read the workspace again.
 async fn publish(client: &Client, state: &Mutex<State>) {
-    let (units, roots, cache) = {
+    let (units, roots, cache, parsed, last) = {
         let state = state.lock().await;
-        (units(&state), state.roots.clone(), state.declared.clone())
+        (units(&state), state.roots.clone(), state.declared.clone(), state.parsed.clone(), state.last.clone())
     };
     let levels = match levels_of(&roots) {
         Ok(levels) => levels,
@@ -248,18 +309,23 @@ async fn publish(client: &Client, state: &Mutex<State>) {
         }
     };
     let paths: HashSet<PathBuf> = units.iter().map(|(p, _)| p.clone()).collect();
-    // the declarations of the files whose text changed since they were read
-    let (per_file, fresh) = tokio::task::spawn_blocking(move || {
+    // the compilation is skipped when neither a text nor a level changed; otherwise only the texts that changed are
+    // parsed. The declarations are read for the texts that changed since they were read.
+    let (per_file, fresh_parsed, fresh_decls, key) = tokio::task::spawn_blocking(move || {
         on_big_stack(move || {
-            let per_file = diagnostics(&units, &levels);
-            let mut fresh = Vec::new();
+            let key = project_key(&units, &levels);
+            let (per_file, fresh_parsed) = match last {
+                Some((k, diags)) if k == key => (diags, Vec::new()),
+                _ => diagnostics(&units, &levels, &parsed),
+            };
+            let mut fresh_decls = Vec::new();
             for (p, t) in &units {
                 let hash = text_hash(t);
                 if !matches!(cache.get(p), Some((h, _)) if *h == hash) {
-                    fresh.push((p.clone(), (hash, declarations_of(p, t))));
+                    fresh_decls.push((p.clone(), (hash, declarations_of(p, t))));
                 }
             }
-            (per_file, fresh)
+            (per_file, fresh_parsed, fresh_decls, key)
         })
     })
     .await
@@ -267,7 +333,10 @@ async fn publish(client: &Client, state: &Mutex<State>) {
     {
         let mut state = state.lock().await;
         state.declared.retain(|p, _| paths.contains(p));
-        state.declared.extend(fresh);
+        state.declared.extend(fresh_decls);
+        state.parsed.retain(|p, _| paths.contains(p));
+        state.parsed.extend(fresh_parsed);
+        state.last = Some((key, per_file.clone()));
     }
     let mut now = HashSet::new();
     for (file, diags) in per_file {
@@ -784,6 +853,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_finding_has_its_category_and_the_wiki_section_that_explains_it() {
+        let src = "module M(input logic [7:0] a, output logic [3:0] y) {\n  assign y = a;\n}\n";
+        let units = vec![(PathBuf::from("m.ov"), src.to_string())];
+        let found: Vec<Diagnostic> = diagnostics(&units, &Levels::default(), &Parsed::new()).0.into_values().flatten().collect();
+        assert!(!found.is_empty(), "the narrowing assignment is a finding");
+        for d in &found {
+            let Some(NumberOrString::String(code)) = &d.code else { panic!("no code: {}", d.message) };
+            let href = d.code_description.as_ref().expect("a link").href.as_str();
+            assert!(href.ends_with(&format!("#{code}")), "{href} does not end with #{code}");
+        }
+        assert!(found.iter().any(|d| d.code == Some(NumberOrString::String("width".into()))));
+    }
+
+    #[test]
+    fn a_text_that_did_not_change_is_not_parsed_again() {
+        let good = "module A(input logic a, output logic y) {\n  assign y = a;\n}\n";
+        let other = "module B(input logic a, output logic y) {\n  assign y = !a;\n}\n";
+        let units = vec![(PathBuf::from("a.ov"), good.to_string()), (PathBuf::from("b.ov"), other.to_string())];
+        let levels = Levels::default();
+        let (_, parsed) = diagnostics(&units, &levels, &Parsed::new());
+        assert_eq!(parsed.len(), 2, "both files are parsed the first time");
+        let cache: Parsed = parsed.into_iter().collect();
+        // the same texts: nothing is parsed again
+        let (_, again) = diagnostics(&units, &levels, &cache);
+        assert!(again.is_empty());
+        // one text changed: only that file is parsed
+        let edited = vec![(PathBuf::from("a.ov"), good.replace("assign", "assign /* x */")), units[1].clone()];
+        let (_, changed) = diagnostics(&edited, &levels, &cache);
+        assert_eq!(changed.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(), vec![PathBuf::from("a.ov")]);
+    }
+
+    #[test]
+    fn the_key_changes_with_a_text_or_a_level_and_not_with_the_order() {
+        let a = (PathBuf::from("a.ov"), "module A;".to_string());
+        let b = (PathBuf::from("b.ov"), "module B;".to_string());
+        let levels = Levels::default();
+        assert_eq!(project_key(&[a.clone(), b.clone()], &levels), project_key(&[b.clone(), a.clone()], &levels));
+        let edited = (PathBuf::from("a.ov"), "module A2;".to_string());
+        assert_ne!(project_key(&[a.clone(), b.clone()], &levels), project_key(&[edited, b.clone()], &levels));
+        let mut warn = Levels::default();
+        warn.set(ovc::diag::Category::Width, ovc::diag::Level::Warn);
+        assert_ne!(project_key(&[a.clone(), b.clone()], &levels), project_key(&[a, b], &warn));
+    }
+
+    #[test]
     fn warnings_keep_their_position_even_with_a_drive_letter() {
         let (path, line, col, message) = parse_warning("C:/proj/a.ov:12:5: warning: 'x' is unused").unwrap();
         assert_eq!((path.as_str(), line, col, message.as_str()), ("C:/proj/a.ov", 12, 5, "'x' is unused"));
@@ -849,7 +963,7 @@ mod tests {
         let src = "module N(input logic [7:0] a, output logic [3:0] y) {\n  assign y = a;\n}\n";
         let units = vec![(PathBuf::from("/w/n.ov"), src.to_string())];
         let has_error = |levels: &Levels| {
-            diagnostics(&units, levels).values().flatten().any(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+            diagnostics(&units, levels, &Parsed::new()).0.values().flatten().any(|d| d.severity == Some(DiagnosticSeverity::ERROR))
         };
         assert!(has_error(&Levels::default()), "a width finding is an error by default");
         let mut warn = Levels::default();

@@ -77,6 +77,11 @@ impl Category {
         ALL.iter().copied().find(|c| c.as_str() == name)
     }
 
+    /// The anchor of the category's section in the wiki's `Lints` page (its name with dashes for spaces).
+    pub fn anchor(self) -> String {
+        self.as_str().replace(' ', "-")
+    }
+
     /// The category of a message of the checks. The first rule that matches is the one.
     pub fn of_message(msg: &str) -> Category {
         let has = |s: &str| msg.contains(s);
