@@ -17,7 +17,7 @@ pipeline Mac(input clk, input rst, input logic valid_in,
   reset rst;
 
   stage mul { val p = a * b; }
-  stage add { val s = p + add.c; }
+  stage add { logic [15:0] s = (p + add.c).wrap(); } // fits: a*b + c <= 65280
   stage out { assign y = s; }
 }
 ```
@@ -162,7 +162,7 @@ pipeline Bypass(input clk, input rst, input logic [7:0] a, output logic [7:0] y,
   clock clk;
   reset rst;
 
-  stage decode { logic [7:0] x = ex.v + a; } // `ex.v`: forwarded from the instruction in execute
+  stage decode { logic [7:0] x = (ex.v + a).wrap(); } // `ex.v`: forwarded from the instruction in execute
   stage ex     { logic [7:0] v = (x + 1).wrap(); }
   stage out    { assign y = v; }
 }
