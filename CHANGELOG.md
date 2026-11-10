@@ -3,7 +3,7 @@
 All notable changes to `ovc` are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any release may change the language).
 
-## [Unreleased]
+## [0.1.22] - 2026-11-10
 
 ### Added
 - `ovc-lsp` answers hover: the declaration line of the identifier under the cursor, with its file and line.
@@ -25,10 +25,12 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 - `ovc --keywords zed|vscode`: the Open Verilog words as the pattern of the editor grammars. The editors and the language
   server share this list.
 
+### Changed
+- **Breaking:** the bit-loss checks (`width`, `carry`, `sizing`, `sign`) now see the statements of a pipeline stage, the
+  initialisers of declarations (`logic [7:0] a = d + 1;`), and the signals a pipeline lowering declares. A design that
+  loses bits there is refused where it used to compile: write the truncation with `.wrap()`, or widen the target.
+
 ### Fixed
-- The bit-loss checks (`width`, `carry`, `sizing`, `sign`) saw neither the statements of a pipeline stage, nor the
-  initialisers of declarations (`logic [7:0] a = d + 1;`), nor the signals a pipeline lowering declares. They now do.
-  Such a design is refused where it used to compile: write the truncation with `.wrap()`.
 - A `.wrap()` exempts its own assignment only. It used to exempt every assignment to the same signal in the module.
 - The `[lints]` table of `ovc.toml` had no effect on the command line: the default levels, given to the command line's
   overrides, overruled it (`width = "warn"` was still an error). Only the categories named on the command line now
