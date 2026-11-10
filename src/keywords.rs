@@ -6,7 +6,7 @@
 /// name). The words of the test blocks are here too.
 pub const OV_WORDS: &[&str] = &[
     "pipeline", "stage", "bundle", "trait", "isa", "regmap", "memmap", "fsm", "fn", "val", "const", "probe", "config",
-    "test", "expect", "wait_until", "step", "timeout", "stall_when", "flush_when", "kill_when", "younger_when", "tie_off",
+    "test", "expect", "wait_until", "timeout", "stall_when", "flush_when", "kill_when", "younger_when", "tie_off",
     "reset", "clock", "domain", "same_domain", "async", "monitor", "master", "slave",
 ];
 
