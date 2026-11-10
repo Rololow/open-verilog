@@ -95,7 +95,7 @@ impl Category {
             Category::Reset
         } else if has("not valid SystemVerilog") {
             Category::Syntax
-        } else if has("is already defined at") {
+        } else if has("is already defined at") || has("is defined twice") {
             Category::Duplicate
         } else if has("needs") && has(" bits") {
             Category::Carry
@@ -250,6 +250,8 @@ mod tests {
         assert_eq!(Category::of_message("reset 'rst' is used both ways"), Category::Reset);
         assert_eq!(Category::of_message("'n' is not assigned on every path of this always_comb (a latch would be inferred)"), Category::Latch);
         assert_eq!(Category::of_message("something nobody has classified"), Category::Other);
+        assert_eq!(Category::of_message("module 'Top' is defined twice (first in a.ov)"), Category::Duplicate);
+        assert_eq!(Category::of_message("signal 'x' is defined twice (stage 's1')"), Category::Duplicate);
     }
 
     #[test]
