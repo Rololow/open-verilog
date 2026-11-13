@@ -957,6 +957,15 @@ impl<'a> Design<'a> {
                         continue;
                     }
                     let (dtype, extra) = types::lower(fold_dtype(&d.dtype, &env)).map_err(|e| ctx.at(it.pos).err(e))?;
+                    // `assignn y = a;` is a declaration of a type named `assignn`: a misspelled statement, not a type
+                    if let Some(word) = near_statement_word(&dtype.name) {
+                        let known = env.typedef_width(&dtype.name).is_some()
+                            || env.struct_info(&dtype.name).is_some()
+                            || env.enum_info(&dtype.name).is_some();
+                        if !known {
+                            return Err(ctx.at(it.pos).err(format!("unknown statement or type '{}' (did you mean '{word}'?)", dtype.name)));
+                        }
+                    }
                     for x in &d.decls {
                         let mut dims = extra.clone();
                         dims.extend(x.dims.iter().map(|e| fold_expr(e, &env)));

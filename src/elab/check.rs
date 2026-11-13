@@ -51,6 +51,29 @@ pub(crate) fn suggest(name: &str, candidates: impl IntoIterator<Item = String>) 
     }
 }
 
+/// The words that start a statement or a declaration of a module, and that a type name could be a typo of (`assignn`).
+/// The type words (`logic`, `wire`...) are not here: a type named after them is a type, not a typo.
+const STATEMENT_WORDS: &[&str] = &[
+    "assign", "always", "always_ff", "always_comb", "always_latch", "initial", "final", "if", "else", "case", "endcase",
+    "default", "for", "while", "begin", "end", "function", "endfunction", "task", "endtask", "generate", "endgenerate",
+    "pipeline", "stage", "fsm", "bundle", "probe", "test", "expect",
+];
+
+/// The statement word that a type name is almost surely a misspelling of: a name at 0.85 similarity or more, not
+/// equal to the word. A type of another file (a package) that happens to resemble one of these words is not reported
+/// at this similarity.
+pub(crate) fn near_statement_word(name: &str) -> Option<&'static str> {
+    if name.is_empty() || STATEMENT_WORDS.contains(&name) {
+        return None;
+    }
+    STATEMENT_WORDS
+        .iter()
+        .map(|w| (similarity(name, w), *w))
+        .filter(|(score, _)| *score >= 0.85)
+        .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(_, w)| w)
+}
+
 /// The names a module declares or can name: its ports, signals, instances, tasks and the locals of its blocks.
 pub(super) fn known_names(module: &Module) -> Vec<String> {
     let mut known: HashSet<String> = HashSet::new();
@@ -366,5 +389,21 @@ pub(super) fn assigns_in_stmt(s: &Stmt, out: &mut Vec<(String, Pos)>) {
         Stmt::For { body, .. } => assigns_in_stmt(body, out),
         Stmt::Case { arms, .. } => arms.iter().for_each(|(_, body)| assigns_in_stmt(body, out)),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::near_statement_word;
+
+    #[test]
+    fn a_misspelled_statement_is_a_statement_word_and_a_type_is_not() {
+        assert_eq!(near_statement_word("assignn"), Some("assign"));
+        assert_eq!(near_statement_word("alwayss"), Some("always"));
+        // a type of a package, and the type words, are not reported
+        assert_eq!(near_statement_word("wire_pkg_t"), None);
+        assert_eq!(near_statement_word("logic"), None);
+        assert_eq!(near_statement_word("assign"), None);
+        assert_eq!(near_statement_word(""), None);
     }
 }

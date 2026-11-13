@@ -6,6 +6,12 @@ type Case = (&'static str, &'static str, &'static str, Option<(usize, usize)>);
 
 const CASES: &[Case] = &[
     (
+        "instruction_mal_orthographiee",
+        "module M(input logic a, output logic y) {\n  assignn y = a;\n}\n",
+        "unknown statement or type 'assignn' (did you mean 'assign'?)",
+        Some((2, 3)),
+    ),
+    (
         "inconnu_suggestion",
         "module M(input clk, input rst, output logic [7:0] q) {
   clock clk;
