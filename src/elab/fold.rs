@@ -1350,18 +1350,34 @@ fn cover_case(subject: &Expr, arms: &[(Option<Vec<Expr>>, Stmt)], pos: Pos, env:
 /// loop, SV says the same in one statement.
 fn sv_loop(header: &ForHeader, body: &Stmt, env: &Env) -> Option<Stmt> {
     let vars = [header.var.clone()];
-    let plain = is_plain_body(body) && !super::stmt_any_expr(body, &|x| super::variable_range(x, &vars));
-    if !is_priority_select(body) && !plain {
-        return None;
-    }
     let Expr::Binary(op, lo, hi, _) = fold_expr(&header.lo, env) else { return None };
     if op.as_str() != ".." {
         return None;
     }
-    int_of(&fold_expr(&lo, env))?;
-    int_of(&fold_expr(&hi, env))?;
+    let (lo_v, hi_v) = (int_of(&fold_expr(&lo, env))?, int_of(&fold_expr(&hi, env))?);
+    let values: Vec<i64> = (lo_v..hi_v).collect();
+    // a variable part-select `[a:b]` of the same width for every value of the loop is written `[b +: w]`, so that the
+    // SystemVerilog loop keeps it (the bounds of a `:` select must be constant)
+    let fixed = |x: &Expr| fixed_width(x, &header.var, &values, env).is_some();
+    let plain = is_plain_body(body) && !super::stmt_any_expr(body, &|x| super::variable_range(x, &vars) && !fixed(x));
+    if !is_priority_select(body) && !plain {
+        return None;
+    }
     let mut inner = env.clone();
     inner.unbind(&header.var);
+    let mut body = boxed_stmt(body, &inner);
+    if super::stmt_any_expr(&body, &|x| super::variable_range(x, &vars)) {
+        let rewritten = crate::pipeline::rewrite::map_stmt(&body, &mut |x| {
+            Ok(fixed_width(x, &header.var, &values, env).and_then(|w| match x {
+                Expr::Slice(base, _, lsb, _) => {
+                    Some(Expr::Slice(base.clone(), lsb.clone(), Box::new(Expr::Num(w.to_string())), "+:".into()))
+                }
+                _ => None,
+            }))
+        })
+        .ok()?;
+        body = Box::new(rewritten);
+    }
     Some(Stmt::For {
         header: ForHeader {
             var: header.var.clone(),
@@ -1371,8 +1387,35 @@ fn sv_loop(header: &ForHeader, body: &Stmt, env: &Env) -> Option<Stmt> {
             step: None,
             pos: header.pos,
         },
-        body: boxed_stmt(body, &inner),
+        body,
     })
+}
+
+/// The width of a `[msb:lsb]` select of a loop variable, when it is the same for every value of the loop (`(i + 1) * 8 - 1`
+/// down to `i * 8` is 8 bits for all `i`). None for another expression, or when the width changes.
+fn fixed_width(x: &Expr, var: &str, values: &[i64], env: &Env) -> Option<i64> {
+    let Expr::Slice(_, msb, lsb, op) = x else { return None };
+    if op.as_str() != ":" || !super::variable_range(x, &[var.to_string()]) {
+        return None;
+    }
+    let width = Expr::Binary(
+        "+".into(),
+        Box::new(Expr::Binary("-".into(), msb.clone(), lsb.clone(), (0, 0))),
+        Box::new(Expr::Num("1".into())),
+        (0, 0),
+    );
+    let mut found = None;
+    for &v in values {
+        let mut e = env.clone();
+        e.bind_int(var, v);
+        let w = int_of(&fold_expr(&width, &e))?;
+        match found {
+            None => found = Some(w),
+            Some(f) if f != w => return None,
+            Some(_) => {}
+        }
+    }
+    found.filter(|w| *w > 0)
 }
 
 /// A loop body made of assignments, conditions, cases and loops, with no declaration: the loop keeps its SystemVerilog
