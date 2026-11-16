@@ -6,6 +6,10 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 ## [Unreleased]
 
 ### Added
+- `ovc-lsp` folds the `{ }` blocks of a file (folding ranges): each block that spans more than one line folds from its
+  brace to its closing brace. A file that does not lex has no folds.
+- `ovc-lsp` offers quick fixes: a missing `;` is added where the error is, and a misspelled name is replaced by the
+  suggestion of its message (`unknown statement or type 'assignn' (did you mean 'assign'?)`).
 - A `for` loop in an `always_ff` whose part-selects have a fixed width (`q[i*8 +: 8]`) keeps its SystemVerilog `for`
   form, with variable part-selects. The synthesis tools infer block RAM from it; the unrolled `if` form does not.
 - A misspelled statement is an error with its suggestion: `assignn y = a;` gives `unknown statement or type 'assignn'
