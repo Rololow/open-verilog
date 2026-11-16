@@ -3,6 +3,18 @@
 All notable changes to `ovc` are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any release may change the language).
 
+## [Unreleased]
+
+### Added
+- A `for` loop in an `always_ff` whose part-selects have a fixed width (`q[i*8 +: 8]`) keeps its SystemVerilog `for`
+  form, with variable part-selects. The synthesis tools infer block RAM from it; the unrolled `if` form does not.
+- A misspelled statement is an error with its suggestion: `assignn y = a;` gives `unknown statement or type 'assignn'
+  (did you mean 'assign'?)`.
+
+### Changed
+- The checks at `warn` are shown by `ovc build`, as the elaboration warnings are. Before, only `ovc lint` showed them,
+  so a latch or a `warn` lint was silent in a build.
+
 ## [0.1.22] - 2026-11-10
 
 ### Added

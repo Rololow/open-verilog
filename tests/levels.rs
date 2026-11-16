@@ -37,6 +37,15 @@ fn allow_and_warn_do_not_refuse() {
 }
 
 #[test]
+fn warn_is_shown_as_a_warning_of_the_build_and_allow_is_not() {
+    // the checks of `warn` reach `compile`, so that `ovc build` prints them as the elaboration warnings do
+    let warned = ovc::compile_with(NARROW, "t.ov", &with(Category::Width, Level::Warn)).unwrap();
+    assert!(warned.warnings.iter().any(|w| w.contains("bits")), "{:?}", warned.warnings);
+    let allowed = ovc::compile_with(NARROW, "t.ov", &with(Category::Width, Level::Allow)).unwrap();
+    assert!(!allowed.warnings.iter().any(|w| w.contains("bits")), "{:?}", allowed.warnings);
+}
+
+#[test]
 fn deny_of_another_category_does_not_refuse() {
     // `width` is an error by default: it is set to warn here, so that only the `latch` level is under test
     let mut levels = Levels::default();

@@ -236,6 +236,20 @@ fn top_modules(source: &File) -> Vec<String> {
     }
 }
 
+/// The fate of one finding: an error at `deny`, kept as a warning at `warn`, dropped at `allow` or when an
+/// `ovc: ignore` on its line silences it. A text that is not a positioned warning is kept as it is.
+fn classify(w: String, levels: &Levels, sources: &mut HashMap<String, Vec<String>>) -> Result<Option<String>> {
+    let Some((file, line, col, message)) = lint::parse_warning(&w) else { return Ok(Some(w)) };
+    let cat = Category::of_message(&message);
+    let finding = lint::Finding { category: cat.as_str(), file: file.clone(), line, col, message: message.clone() };
+    match levels.get(cat) {
+        _ if lint::silenced(&finding, sources) => Ok(None),
+        Level::Allow => Ok(None),
+        Level::Deny => Err(Error::new(message, &file, line, col)),
+        Level::Warn => Ok(Some(w)),
+    }
+}
+
 pub fn compile_parsed(parsed: Vec<File>, options: &Options) -> Result<Compiled> {
     let mut source = File::default();
     for unit in parsed {
@@ -258,20 +272,16 @@ pub fn compile_parsed(parsed: Vec<File>, options: &Options) -> Result<Compiled> 
     }
     // the clock domains are checked on the design as elaborated and connected: children before parents
     warnings.extend(domains::check(&modules, &handshakes, &declared_resets(&envs))?);
-    // the findings of the checks at `deny` are errors (the checks run only when some category is at `deny`)
-    if options.levels.any_deny() {
-        let mut found = checks::check(&modules, &envs, &checks::wrapped_in(&source));
-        found.extend(warnings.iter().cloned());
-        let mut sources = HashMap::new();
-        for w in &found {
-            let Some((file, line, col, message)) = lint::parse_warning(w) else { continue };
-            let cat = Category::of_message(&message);
-            let finding = lint::Finding { category: cat.as_str(), file: file.clone(), line, col, message: message.clone() };
-            if options.levels.get(cat) == Level::Deny && !lint::silenced(&finding, &mut sources) {
-                return Err(Error::new(message, &file, line, col));
-            }
+    // every finding gets its level: `deny` is an error, `warn` is shown with the warnings, `allow` is dropped
+    let mut sources = HashMap::new();
+    let mut shown = Vec::new();
+    let found = checks::check(&modules, &envs, &checks::wrapped_in(&source)).into_iter().chain(warnings);
+    for w in found {
+        if let Some(w) = classify(w, &options.levels, &mut sources)? {
+            shown.push(w);
         }
     }
+    let warnings = shown;
     let tests_sv = if tests.is_empty() { None } else { Some(testgen::generate(&tests, &modules, &envs, &procs, "<project>")?) };
     let probes_sv = if probes.is_empty() { None } else { Some(probes::generate(&probes, &modules, &envs, "<project>")?) };
     let packages: String = packages.iter().map(|(_, text)| text.as_str()).collect();
