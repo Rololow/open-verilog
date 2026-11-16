@@ -11,7 +11,13 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 - A misspelled statement is an error with its suggestion: `assignn y = a;` gives `unknown statement or type 'assignn'
   (did you mean 'assign'?)`.
 
+### Fixed
+- `latch`: an `if ... else if` chain, or a run of `if (x == k)` one after another, that tests every value of a signal of
+  at most 8 bits is not a latch.
+
 ### Changed
+- **Breaking:** `latch` is an error by default. A combinational signal not assigned on every path is refused unless the
+  block gives it a default, or its `if` tests cover every value of a signal of at most 8 bits.
 - The checks at `warn` are shown by `ovc build`, as the elaboration warnings are. Before, only `ovc lint` showed them,
   so a latch or a `warn` lint was silent in a build.
 

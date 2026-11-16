@@ -72,7 +72,10 @@ you want (`a[3:0]`), widen the target, or `.wrap()` when the drop is intended.
 ## latch
 
 A combinational block does not assign a signal on every path, so the signal keeps its value: a latch. Give the signal a
-default at the top of the block (`y = 0;`), or assign it in every branch. This is a warning by default.
+default at the top of the block (`y = 0;`), or assign it in every branch. An `if ... else if` chain that tests every value
+of a signal of at most 8 bits (`if (tr == 0) .. else if (tr == 1) ..` on a one-bit `tr`) assigns on every path, so it is
+not a latch. Two `if` statements in sequence that together cover every value are still reported: write them as an
+`if ... else if` chain, or give the signal a default. This is an error by default.
 
 ## driver
 

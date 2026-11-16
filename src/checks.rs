@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use crate::ast::{Dir, DType, Expr, File, Item, ItemKind, Module, Pos, Stmt};
 use crate::error::Error;
 use crate::domains::reads_of;
-use crate::elab::fold::int_of;
+use crate::elab::fold::{fold_stmt, int_of, loop_values};
 use crate::elab::width::{width_of, Width};
 use crate::elab::{expr_any, stmt_any_expr, Env};
 
@@ -229,9 +229,40 @@ fn collect<'a>(s: &'a Stmt, out: &mut Vec<(&'a Expr, &'a Expr, bool, Pos)>) {
 fn def_assigned(s: &Stmt, env: Option<&Env>) -> BTreeSet<String> {
     match s {
         Stmt::Assign { lhs, .. } => parts(lhs).into_iter().filter_map(base).collect(),
-        Stmt::Block(v) => v.iter().flat_map(|x| def_assigned(x, env)).collect(),
-        Stmt::If { then, els: Some(e), .. } => def_assigned(then, env).intersection(&def_assigned(e, env)).cloned().collect(),
-        Stmt::If { els: None, .. } => BTreeSet::new(),
+        Stmt::Block(v) => block_assigned(v, env),
+        // a loop with constant bounds is unrolled for the analysis: each iteration is the body with its variable folded
+        // to the value, and the iterations are a block (a row's `if (tr == k)` then tests the constant of its row)
+        Stmt::For { header, body } => {
+            let Some(e) = env else { return BTreeSet::new() };
+            match loop_values(header, e) {
+                Some(values) if !values.is_empty() => {
+                    let mut iterations: Vec<Stmt> = Vec::new();
+                    for v in &values {
+                        let mut inner = e.clone();
+                        inner.bind_int(&header.var, *v);
+                        match fold_stmt(body, &inner) {
+                            Stmt::Block(items) => iterations.extend(items),
+                            other => iterations.push(other),
+                        }
+                    }
+                    block_assigned(&iterations, env)
+                }
+                _ => BTreeSet::new(),
+            }
+        }
+        Stmt::If { then, els, .. } => {
+            if let Some(bodies) = exhaustive_if(s, env) {
+                let mut sets = bodies.into_iter().map(|b| def_assigned(b, env));
+                return match sets.next() {
+                    Some(first) => sets.fold(first, |acc, s| acc.intersection(&s).cloned().collect()),
+                    None => BTreeSet::new(),
+                };
+            }
+            match els {
+                Some(e) => def_assigned(then, env).intersection(&def_assigned(e, env)).cloned().collect(),
+                None => BTreeSet::new(),
+            }
+        }
         Stmt::Case { subject, kind, arms, .. } => {
             let has_default = arms.iter().any(|(labels, _)| labels.is_none());
             if !has_default && !case_covers_all(subject, kind, arms, env) {
@@ -265,6 +296,98 @@ fn case_covers_all(subject: &Expr, kind: &str, arms: &[(Option<Vec<Expr>>, Stmt)
         }
     }
     values == (0..(1i64 << w.width)).collect()
+}
+
+/// An `if` chain that tests one signal of at most 8 bits against constants (`if (x == 0) .. else if (x == 1) ..`) and
+/// has no final `else`, whose constants are every value of the signal: one of its branches always runs. Its branches.
+fn exhaustive_if<'a>(s: &'a Stmt, env: Option<&Env>) -> Option<Vec<&'a Stmt>> {
+    let mut bodies = Vec::new();
+    let mut tests = Vec::new();
+    let mut cur = s;
+    loop {
+        // a final `else` is not a test: the intersection of the branches already covers it
+        let Stmt::If { cond, then, els } = cur else { return None };
+        tests.push(eq_operands(cond)?);
+        bodies.push(&**then);
+        match els.as_deref() {
+            None => break,
+            Some(next) => cur = next,
+        }
+    }
+    covers_every_value(&tests, env).then_some(bodies)
+}
+
+/// `x == k` (or `k == x`), with `x` a name and `k` a constant: the name and the constant.
+fn eq_operands(cond: &Expr) -> Option<(&Expr, i64)> {
+    let Expr::Binary(op, a, b, _) = cond else { return None };
+    if op != "==" {
+        return None;
+    }
+    match (&**a, &**b) {
+        (x @ Expr::Ident(..), c) | (c, x @ Expr::Ident(..)) => Some((x, int_of(c)?)),
+        _ => None,
+    }
+}
+
+/// Whether the tests (`name == constant`, all on one name of at most 8 bits) hold for every value of the name: one of
+/// them then always holds, so one of the branches always runs.
+fn covers_every_value(tests: &[(&Expr, i64)], env: Option<&Env>) -> bool {
+    let Some(&(subject, _)) = tests.first() else { return false };
+    let Some(env) = env else { return false };
+    let same = |x: &Expr| matches!((subject, x), (Expr::Ident(p, _), Expr::Ident(q, _)) if p == q);
+    if !tests.iter().all(|(x, _)| same(x)) {
+        return false;
+    }
+    let Some(w) = width_of(subject, env) else { return false };
+    if w.width > 8 {
+        return false;
+    }
+    let values: BTreeSet<i64> = tests.iter().map(|(_, k)| *k).collect();
+    values == (0..(1i64 << w.width)).collect()
+}
+
+/// The signals assigned on every path through a block. A run of `if (x == k) body` with no `else`, one after another,
+/// whose constants are every value of `x`, is one `if` of which a branch always runs: its bodies count together.
+fn block_assigned(v: &[Stmt], env: Option<&Env>) -> BTreeSet<String> {
+    let flat = flatten_block(v);
+    let mut out = BTreeSet::new();
+    let mut i = 0;
+    while i < flat.len() {
+        let run = flat[i..].iter().take_while(|s| matches!(s, Stmt::If { els: None, .. })).count();
+        let tests: Vec<(&Expr, i64)> = flat[i..i + run]
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::If { cond, .. } => eq_operands(cond),
+                _ => None,
+            })
+            .collect();
+        if run >= 2 && tests.len() == run && covers_every_value(&tests, env) {
+            let mut sets = flat[i..i + run].iter().map(|s| match s {
+                Stmt::If { then, .. } => def_assigned(then, env),
+                _ => BTreeSet::new(),
+            });
+            if let Some(first) = sets.next() {
+                out.extend(sets.fold(first, |acc, s| acc.intersection(&s).cloned().collect()));
+            }
+            i += run;
+        } else {
+            out.extend(def_assigned(flat[i], env));
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The statements of a block in order: a nested block is a sequence too, so its statements join its parent's.
+fn flatten_block(v: &[Stmt]) -> Vec<&Stmt> {
+    let mut out = Vec::new();
+    for s in v {
+        match s {
+            Stmt::Block(items) => out.extend(flatten_block(items)),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// The width of an expression, when it is known and is not an unsized literal.

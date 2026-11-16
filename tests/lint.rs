@@ -91,8 +91,17 @@ fn a_file_that_does_not_parse_is_not_analyzed() {
 }
 
 fn categories_of(name: &str, text: &str) -> Vec<(String, String)> {
+    categories_in(name, text, "d.sv")
+}
+
+/// The findings of an Open Verilog source (a `.ov` file: its loops over rows are Open Verilog).
+fn categories_of_ov(name: &str, text: &str) -> Vec<(String, String)> {
+    categories_in(name, text, "d.ov")
+}
+
+fn categories_in(name: &str, text: &str, file_name: &str) -> Vec<(String, String)> {
     let dir = scratch(name);
-    let file = dir.join("d.sv");
+    let file = dir.join(file_name);
     fs::write(&file, text).unwrap();
     let opts = Options { files: vec![file.to_string_lossy().into_owned()], ..Options::default() };
     let report = lint::run(&opts);
@@ -110,6 +119,68 @@ fn a_combinational_signal_not_assigned_on_every_path_is_a_latch() {
 fn a_default_value_removes_the_latch() {
     let found = categories_of("nolatch", "module l(input logic en, input logic d, output logic q);\n  always_comb begin\n    q = 0;\n    if (en) q = d;\n  end\nendmodule\n");
     assert!(!found.iter().any(|(c, _)| c == "latch"), "{found:?}");
+}
+
+#[test]
+fn an_if_chain_on_every_value_of_a_one_bit_signal_is_not_a_latch() {
+    // `tr` is 0 or 1: one of the two tests always holds, so `q` is assigned on every path
+    let src = "module l(input logic tr, input logic d, output logic q);\n  always_comb begin\n    if (tr == 0) q = d;\n    else if (tr == 1) q = ~d;\n  end\nendmodule\n";
+    let found = categories_of("chain1", src);
+    assert!(!found.iter().any(|(c, _)| c == "latch"), "{found:?}");
+}
+
+#[test]
+fn an_if_chain_missing_a_value_is_still_a_latch() {
+    // `s` has four values and the chain tests two of them
+    let src = "module l(input logic [1:0] s, input logic d, output logic q);\n  always_comb begin\n    if (s == 0) q = d;\n    else if (s == 1) q = ~d;\n  end\nendmodule\n";
+    let found = categories_of("chain2", src);
+    assert!(found.iter().any(|(c, m)| c == "latch" && m.contains("'q'")), "{found:?}");
+}
+
+#[test]
+fn an_exhaustive_if_chain_with_a_branch_not_assigning_is_still_a_latch() {
+    let src = "module l(input logic tr, input logic d, output logic q);\n  always_comb begin\n    if (tr == 0) q = d;\n    else if (tr == 1) begin end\n  end\nendmodule\n";
+    let found = categories_of("chain3", src);
+    assert!(found.iter().any(|(c, m)| c == "latch" && m.contains("'q'")), "{found:?}");
+}
+
+#[test]
+fn two_ifs_in_sequence_that_test_every_value_of_a_one_bit_signal_are_not_a_latch() {
+    let src = "module l(input logic tr, input logic d, output logic q);\n  always_comb begin\n    if (tr == 0) q = d;\n    if (tr == 1) q = ~d;\n  end\nendmodule\n";
+    let found = categories_of("seq1", src);
+    assert!(!found.iter().any(|(c, _)| c == "latch"), "{found:?}");
+}
+
+#[test]
+fn two_ifs_in_sequence_that_miss_a_value_are_still_a_latch() {
+    // `s` has four values: the two tests do not cover them
+    let src = "module l(input logic [1:0] s, input logic d, output logic q);\n  always_comb begin\n    if (s == 0) q = d;\n    if (s == 1) q = ~d;\n  end\nendmodule\n";
+    let found = categories_of("seq2", src);
+    assert!(found.iter().any(|(c, m)| c == "latch" && m.contains("'q'")), "{found:?}");
+}
+
+#[test]
+fn a_loop_that_assigns_every_element_is_not_a_latch() {
+    // the loop runs at least once, and every element of `y` is assigned by it
+    let src = "module l(input logic d, output logic [1:0] y [2]) {\n  always_comb {\n    for i in 0..2 { y[i] = d; }\n  }\n}\n";
+    let found = categories_of("loopfull", src);
+    assert!(!found.iter().any(|(c, _)| c == "latch"), "{found:?}");
+}
+
+#[test]
+fn a_loop_over_rows_that_test_every_value_is_not_a_latch() {
+    // each row tests the one-bit `tr` against its constant: the two rows together assign `y` on every path
+    let src = "module R<int N = 3>(input logic tr, output logic [7:0] y [N]) {\n  always_comb {\n    for (k, lanes) in [[1, 0..N], [0, 0..N]] {\n      if (tr == k) { for i in lanes { y[i] = i; } }\n    }\n  }\n}\n";
+    let found = categories_of_ov("rowsfull", src);
+    assert!(!found.iter().any(|(c, _)| c == "latch"), "{found:?}");
+}
+
+#[test]
+fn a_loop_over_rows_with_an_empty_row_is_still_a_latch() {
+    // the row for `tr == 0` assigns nothing
+    let src = "module R<int N = 3>(input logic tr, output logic [7:0] y [N]) {\n  always_comb {\n    for (k, lanes) in [[1, 0..N], [0, 0..0]] {\n      if (tr == k) { for i in lanes { y[i] = i; } }\n    }\n  }\n}\n";
+    let found = categories_of_ov("rowsempty", src);
+    assert!(found.iter().any(|(c, m)| c == "latch" && m.contains("'y'")), "{found:?}");
 }
 
 #[test]
