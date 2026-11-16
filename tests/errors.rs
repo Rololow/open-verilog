@@ -12,6 +12,12 @@ const CASES: &[Case] = &[
         Some((2, 3)),
     ),
     (
+        "include_pas_encore",
+        "module M(input logic a, output logic y) {\n  `include \"x.ov\"\n  assign y = a;\n}\n",
+        "`include is not supported in a .ov file yet",
+        Some((2, 1)),
+    ),
+    (
         "inconnu_suggestion",
         "module M(input clk, input rst, output logic [7:0] q) {
   clock clk;

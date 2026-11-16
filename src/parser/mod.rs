@@ -68,9 +68,20 @@ pub struct Parser {
     loops: usize,
 }
 
-/// Parses a .ov file into its modules.
+/// Parses a .ov file into its modules. A file with preprocessor directives (`` `define ``, `` `ifdef `` ... `` `endif ``,
+/// and the macros they define) is preprocessed first, as a .sv file is: the lines keep their numbers, so the errors of
+/// the parser are where they are written. `` `include `` is not supported in a .ov file yet.
 pub fn parse_file(src: &str, file: &str) -> Result<File> {
-    parse_file_with_notes(src, src, file)
+    if !src.contains('`') {
+        return parse_file_with_notes(src, src, file);
+    }
+    for (i, line) in src.lines().enumerate() {
+        if line.trim_start().starts_with("`include") {
+            return Err(crate::error::Error::new("`include is not supported in a .ov file yet: write the code in the file or in a .sv file", file, i + 1, 1));
+        }
+    }
+    let pre = crate::preproc::Preprocessor::new(&[], &[]).run(src, file)?;
+    parse_file_with_notes(&pre, src, file)
 }
 
 /// Parses `src`; the `// ovc:` annotations of a .sv file are read from `notes` (the text as written: the preprocessor of the

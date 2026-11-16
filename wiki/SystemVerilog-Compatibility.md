@@ -23,10 +23,11 @@ A plain `.sv` file goes through the same parser, so the generated SystemVerilog 
 | Construct | Error today |
 | --- | --- |
 | `function automatic ... endfunction` in a module | `'function' is not supported yet` |
-| `` `define `` / `` `ifdef `` / `` `include `` (the preprocessor) | `unexpected character '`'` |
+| `` `include `` in a `.ov` file | an error: the include path option is not there yet (write the code in the file or in a `.sv` file) |
 
-For a function, write the logic with the `.ov` form `fn name(...) -> type { return ...; }`. For a macro, use a
-`config` or a `val` instead (see [Language tour](Language-Tour)). The preprocessor is part of the lint work below.
+For a function, write the logic with the `.ov` form `fn name(...) -> type { return ...; }`. `` `define ``, `` `ifdef ``,
+`` `ifndef ``, `` `else ``, `` `endif `` and the macro uses work in a `.ov` file, so SystemVerilog code can be moved over
+piece by piece. A `config` or a `val` is still the better form for a value (see [Language tour](Language-Tour)).
 
 ## Lint
 
