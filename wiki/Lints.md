@@ -69,6 +69,18 @@ product. Compute the product on a wider signal, then shift. Or `.wrap()` the pro
 A value is wider than its target (`logic [3:0] y = a;` with an 8-bit `a`): the high bits are dropped. Select the bits
 you want (`a[3:0]`), widen the target, or `.wrap()` when the drop is intended.
 
+## loop
+
+A combinational signal depends on itself through the assignments that drive it: `assign y = y & a;`, or two signals
+that drive each other (`assign b = y ^ a; assign y = b;`). Its value would never settle, so the circuit oscillates or
+holds an unknown value. Break the loop with a register (`always_ff`), or compute the value from the inputs only. This is
+an error by default.
+
+The check follows the names of the signals. A field is a name of its own (`s.to` does not depend on `s.from`), and the
+elements of an array are not followed by their index: a loop that goes through an array element is not reported. A
+block does not count the reads of the names it assigns (`t = 0; if (a) t = t + 1;` sets `t` before it reads it). The
+conditions of an `if` are not followed yet.
+
 ## latch
 
 A combinational block does not assign a signal on every path, so the signal keeps its value: a latch. Give the signal a

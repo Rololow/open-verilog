@@ -184,6 +184,40 @@ fn a_loop_over_rows_with_an_empty_row_is_still_a_latch() {
 }
 
 #[test]
+fn a_signal_that_depends_on_itself_through_assignments_is_a_loop() {
+    let found = categories_of("loop2", "module l(input logic a, output logic y);\n  logic b;\n  assign b = y ^ a;\n  assign y = b;\nendmodule\n");
+    assert!(found.iter().any(|(c, m)| c == "loop" && m.contains("'b'") && m.contains("'y'")), "{found:?}");
+}
+
+#[test]
+fn a_signal_that_reads_itself_in_an_assignment_is_a_loop() {
+    let found = categories_of("loop1", "module l(input logic a, output logic y);\n  assign y = y & a;\nendmodule\n");
+    assert!(found.iter().any(|(c, m)| c == "loop" && m.contains("'y'")), "{found:?}");
+}
+
+#[test]
+fn fields_of_a_structure_are_different_signals() {
+    // `s.to` reads `s.from`: no loop, although both are fields of `s`
+    let found = categories_of("loopfields", "module l(input logic [3:0] x, output logic [3:0] y);\n  logic [3:0] p;\n  logic [3:0] q;\n  assign p = x;\n  assign q = p;\n  assign y = q;\nendmodule\n");
+    assert!(!found.iter().any(|(c, _)| c == "loop"), "{found:?}");
+}
+
+#[test]
+fn a_block_that_sets_a_signal_before_reading_it_is_not_a_loop() {
+    let src = "module l(input logic a, output logic [3:0] y);\n  logic [3:0] t;\n  always_comb begin\n    t = 0;\n    if (a) t = t + 1;\n    y = t;\n  end\nendmodule\n";
+    let found = categories_of("loopblock", src);
+    assert!(!found.iter().any(|(c, _)| c == "loop"), "{found:?}");
+}
+
+#[test]
+fn elements_of_an_array_are_not_one_signal() {
+    // `st[1]` reads `st[0]`, a chain and not a loop; the elements are not followed by their index, so no loop is invented
+    let src = "module l(input logic a, output logic y);\n  logic [1:0] st [2];\n  assign st[0] = a;\n  assign st[1] = st[0];\n  assign y = st[1];\nendmodule\n";
+    let found = categories_of("loopark", src);
+    assert!(!found.iter().any(|(c, _)| c == "loop"), "{found:?}");
+}
+
+#[test]
 fn two_assignments_drive_the_same_signal() {
     let found = categories_of("driver", "module d(input logic a, output logic y);\n  assign y = a;\n  assign y = ~a;\nendmodule\n");
     assert!(found.iter().any(|(c, m)| c == "driver" && m.contains("'y' is driven from several places (assign and assign)")), "{found:?}");

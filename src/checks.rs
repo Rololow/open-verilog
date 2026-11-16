@@ -29,6 +29,7 @@ pub fn check(modules: &[Module], envs: &HashMap<String, Env>, wrapped: &Wrapped)
         check_signs(m, env, wrapped, &mut out);
         check_sizes(m, env, &mut out);
         check_latches(m, env, &mut out);
+        check_loops(m, &mut out);
         let mut undriven = Vec::new();
         check_drivers(m, &by_name, &mut out, &mut undriven);
         for e in undriven {
@@ -743,6 +744,123 @@ fn is_wrapped(module: &str, name: &str, pos: Pos, wrapped: &Wrapped) -> bool {
                 .and_then(|rest| rest.strip_prefix('_'))
                 .is_some_and(|idx| idx.split('_').all(|d| !d.is_empty() && d.bytes().all(|c| c.is_ascii_digit())))
     })
+}
+
+/// A combinational loop: a signal whose value depends on itself through the assignments that drive it (`assign b = y ^
+/// a; assign y = b;`). The graph has an edge from each target to the names its value reads. A block does not count the
+/// reads of the names it assigns: their value is set before it is read. The conditions of an `if` are not followed yet.
+fn check_loops(m: &Module, out: &mut Vec<String>) {
+    let mut edges: BTreeMap<String, Vec<(String, Pos)>> = BTreeMap::new();
+    let mut add = |lhs: &Expr, rhs: &Expr, pos: Pos, written_here: &BTreeSet<String>| {
+        let mut reads = BTreeSet::new();
+        plain_reads(rhs, &mut reads);
+        for target in parts(lhs).into_iter().filter_map(plain_name) {
+            for r in reads.iter().filter(|r| !written_here.contains(*r)) {
+                edges.entry(target.clone()).or_default().push((r.clone(), pos));
+            }
+        }
+    };
+    for it in &m.items {
+        match &it.kind {
+            ItemKind::ContAssign { lhs, rhs } => add(lhs, rhs, it.pos, &BTreeSet::new()),
+            ItemKind::AlwaysComb(body) => {
+                let assigns = assignments(body);
+                let written: BTreeSet<String> = assigns.iter().flat_map(|(lhs, _, _, _)| parts(lhs)).filter_map(plain_name).collect();
+                for (lhs, rhs, _, pos) in assigns {
+                    add(lhs, rhs, pos, &written);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut reported: BTreeSet<String> = BTreeSet::new();
+    for n in edges.keys() {
+        if reported.contains(n) {
+            continue;
+        }
+        let from_n = reach(&edges, n);
+        if !from_n.contains(n) {
+            continue;
+        }
+        // the signals of the loop: those that n reaches and that reach n back
+        let group: BTreeSet<String> = from_n.iter().filter(|x| reach(&edges, x).contains(n)).cloned().collect();
+        let pos = group
+            .iter()
+            .flat_map(|g| edges.get(g).into_iter().flatten().filter(|(r, _)| group.contains(r)).map(|(_, p)| *p))
+            .min()
+            .unwrap_or((1, 1));
+        let names: Vec<String> = group.iter().map(|g| format!("'{g}'")).collect();
+        warn(out, m, pos, format!("combinational loop through {}: the value would never settle (break it with a register)", names.join(", ")));
+        reported.extend(group);
+    }
+}
+
+/// The name of a signal written as `a` or `a.f.g` (a field is a name of its own); none for an element or a slice, whose
+/// index is not followed (a loop through an array is not reported).
+fn plain_name(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Ident(n, _) => Some(n.clone()),
+        Expr::Member(b, f, _) => plain_name(b).map(|b| format!("{b}.{f}")),
+        _ => None,
+    }
+}
+
+/// The signals an expression reads by their plain names. The base of an indexed or sliced signal is not read by name
+/// (the index is), so that `st[0]` and `st[1]` are not one signal.
+fn plain_reads(e: &Expr, out: &mut BTreeSet<String>) {
+    match e {
+        Expr::Ident(n, _) => {
+            out.insert(n.clone());
+        }
+        // `a.f` is a name; a method on an expression (`(y + 1).wrap()`) reads what its receiver reads
+        Expr::Member(b, _, _) => match plain_name(e) {
+            Some(n) => {
+                out.insert(n);
+            }
+            None => plain_reads(b, out),
+        },
+        Expr::Index(_, i) => plain_reads(i, out),
+        Expr::Slice(_, m, l, _) => {
+            plain_reads(m, out);
+            plain_reads(l, out);
+        }
+        Expr::Unary(_, x) => plain_reads(x, out),
+        Expr::Binary(_, a, b, _) => {
+            plain_reads(a, out);
+            plain_reads(b, out);
+        }
+        Expr::Ternary(c, a, b) => {
+            plain_reads(c, out);
+            plain_reads(a, out);
+            plain_reads(b, out);
+        }
+        Expr::Call(f, args) => {
+            plain_reads(f, out);
+            args.iter().for_each(|a| plain_reads(a, out));
+        }
+        Expr::Concat(args) => args.iter().for_each(|a| plain_reads(a, out)),
+        Expr::Repl(n, args) => {
+            plain_reads(n, out);
+            args.iter().for_each(|a| plain_reads(a, out));
+        }
+        Expr::Cast(w, v) => {
+            plain_reads(w, out);
+            plain_reads(v, out);
+        }
+        _ => {}
+    }
+}
+
+/// The signals that `start` reaches through at least one edge.
+fn reach(edges: &BTreeMap<String, Vec<(String, Pos)>>, start: &str) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut stack: Vec<&str> = edges.get(start).into_iter().flatten().map(|(r, _)| r.as_str()).collect();
+    while let Some(x) = stack.pop() {
+        if seen.insert(x.to_string()) {
+            stack.extend(edges.get(x).into_iter().flatten().map(|(r, _)| r.as_str()));
+        }
+    }
+    seen
 }
 
 /// A combinational block must assign each signal on every path, or a latch is inferred.
