@@ -22,6 +22,7 @@ pub enum Category {
     Width,
     Latch,
     Loop,
+    Latency,
     Driver,
     Connection,
     Process,
@@ -31,7 +32,7 @@ pub enum Category {
 }
 
 /// Every category, in the order of the documentation.
-pub const ALL: [Category; 17] = [
+pub const ALL: [Category; 18] = [
     Category::Cdc,
     Category::Sign,
     Category::Handshake,
@@ -43,6 +44,7 @@ pub const ALL: [Category; 17] = [
     Category::Width,
     Category::Latch,
     Category::Loop,
+    Category::Latency,
     Category::Driver,
     Category::Connection,
     Category::Process,
@@ -66,6 +68,7 @@ impl Category {
             Category::Width => "width",
             Category::Latch => "latch",
             Category::Loop => "loop",
+            Category::Latency => "latency",
             Category::Driver => "driver",
             Category::Connection => "connection",
             Category::Process => "process",
@@ -106,6 +109,8 @@ impl Category {
             Category::Sizing
         } else if has("bits but") || has("does not fit") || has("are dropped") || (has(" bits wide") && has("is ")) {
             Category::Width
+        } else if has("different latencies") {
+            Category::Latency
         } else if has("combinational loop") {
             Category::Loop
         } else if has("latch") {

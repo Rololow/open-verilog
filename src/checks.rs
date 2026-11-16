@@ -30,6 +30,7 @@ pub fn check(modules: &[Module], envs: &HashMap<String, Env>, wrapped: &Wrapped)
         check_sizes(m, env, &mut out);
         check_latches(m, env, &mut out);
         check_loops(m, &mut out);
+        check_latency(m, &mut out);
         let mut undriven = Vec::new();
         check_drivers(m, &by_name, &mut out, &mut undriven);
         for e in undriven {
@@ -797,6 +798,95 @@ fn check_loops(m: &Module, out: &mut Vec<String>) {
 
 /// The name of a signal written as `a` or `a.f.g` (a field is a name of its own); none for an element or a slice, whose
 /// index is not followed (a loop through an array is not reported).
+/// The latency of each signal in registers, from each input port: an input is 0, a combinational assignment adds 0 and a
+/// register adds 1. An expression whose operands come from one input with different latencies (one of them is a
+/// register and the other is not, or they are not the same number of registers apart) is reported: the earlier value
+/// needs a `.delay(n)`. A signal with no latency (a loop of registers, or two paths of different lengths) is left out.
+fn check_latency(m: &Module, out: &mut Vec<String>) {
+    // (source, target, registers on the way, where)
+    let mut edges: Vec<(String, String, u32, Pos)> = Vec::new();
+    // the names read by each assignment, and where it is
+    let mut reads_at: Vec<(BTreeSet<String>, Pos)> = Vec::new();
+    let add = |lhs: &Expr, rhs: &Expr, pos: Pos, weight: u32, edges: &mut Vec<(String, String, u32, Pos)>, reads_at: &mut Vec<(BTreeSet<String>, Pos)>| {
+        let mut reads = BTreeSet::new();
+        plain_reads(rhs, &mut reads);
+        for target in parts(lhs).into_iter().filter_map(plain_name) {
+            for r in &reads {
+                edges.push((r.clone(), target.clone(), weight, pos));
+            }
+        }
+        reads_at.push((reads, pos));
+    };
+    for it in &m.items {
+        match &it.kind {
+            ItemKind::ContAssign { lhs, rhs } => add(lhs, rhs, it.pos, 0, &mut edges, &mut reads_at),
+            ItemKind::AlwaysComb(body) => {
+                for (lhs, rhs, _, pos) in assignments(body) {
+                    add(lhs, rhs, pos, 0, &mut edges, &mut reads_at);
+                }
+            }
+            ItemKind::Always { body, .. } => {
+                for (lhs, rhs, _, pos) in assignments(body) {
+                    add(lhs, rhs, pos, 1, &mut edges, &mut reads_at);
+                }
+            }
+            _ => {}
+        }
+    }
+    // a path has at most as many registers as there are edges, unless it goes round a loop: beyond this, the signal is
+    // on a loop and has no latency
+    let cap = 256u32;
+    let mut out_edges: BTreeMap<&str, Vec<(&str, u32)>> = BTreeMap::new();
+    for (s, t, w, _) in &edges {
+        out_edges.entry(s.as_str()).or_default().push((t.as_str(), *w));
+    }
+    let inputs: Vec<&str> = m.ports.iter().filter(|p| p.dir == Dir::Input).map(|p| p.name.as_str()).collect();
+    // per input: the latencies of each signal reached from it, and the signals on a loop
+    let mut latency: BTreeMap<&str, BTreeMap<&str, BTreeSet<u32>>> = BTreeMap::new();
+    for &inp in &inputs {
+        let mut lat: BTreeMap<&str, BTreeSet<u32>> = BTreeMap::new();
+        let mut looped: BTreeSet<&str> = BTreeSet::new();
+        lat.entry(inp).or_default().insert(0);
+        let mut work = vec![inp];
+        while let Some(n) = work.pop() {
+            let here: Vec<u32> = lat.get(n).map(|v| v.iter().copied().collect()).unwrap_or_default();
+            for (t, w) in out_edges.get(n).into_iter().flatten() {
+                for &v in &here {
+                    let nv = v + w;
+                    if nv > cap {
+                        looped.insert(t);
+                        continue;
+                    }
+                    if lat.entry(t).or_default().insert(nv) {
+                        work.push(t);
+                    }
+                }
+            }
+        }
+        for (n, vals) in lat {
+            if vals.len() == 1 && !looped.contains(n) {
+                latency.entry(n).or_default().insert(inp, vals.clone());
+            }
+        }
+    }
+    let mut reported: BTreeSet<(Pos, String)> = BTreeSet::new();
+    for (reads, pos) in &reads_at {
+        for &inp in &inputs {
+            let mut seen: BTreeMap<u32, &str> = BTreeMap::new();
+            for r in reads {
+                if let Some(v) = latency.get(r.as_str()).and_then(|by| by.get(inp)).and_then(|s| s.iter().next()) {
+                    seen.entry(*v).or_insert(r.as_str());
+                }
+            }
+            if seen.len() < 2 || !reported.insert((*pos, inp.to_string())) {
+                continue;
+            }
+            let list: Vec<String> = seen.iter().map(|(v, n)| format!("'{n}' is {v} register(s) from '{inp}'")).collect();
+            warn(out, m, *pos, format!("the operands of this expression arrive at different latencies: {} (delay the earlier one with .delay(n))", list.join(", ")));
+        }
+    }
+}
+
 fn plain_name(e: &Expr) -> Option<String> {
     match e {
         Expr::Ident(n, _) => Some(n.clone()),
@@ -1006,12 +1096,21 @@ fn check_process_style(m: &Module, out: &mut Vec<String>) {
                     warn(out, m, pos, "non-blocking assignment (<=) inside always_comb: use =".into());
                 }
             }
-            ItemKind::Always { body, .. } => {
+            ItemKind::Always { body, keyword, .. } => {
                 for (lhs, _, nonblocking, pos) in assignments(body) {
                     if nonblocking {
                         continue;
                     }
                     let names: BTreeSet<String> = parts(lhs).into_iter().filter_map(base).collect();
+                    // a clocked block takes `<=` for every register: a `=` in it is a mistake, whether or not another
+                    // process reads the name
+                    if keyword == "always_ff" {
+                        // the temporaries the compiler writes (`ov_...`, as for a `break`) are not the author's
+                        if let Some(n) = names.iter().find(|n| !n.starts_with("ov_")) {
+                            warn(out, m, pos, format!("blocking assignment (=) to '{n}' inside always_ff: use <= (a register takes its value at the clock edge)"));
+                        }
+                        continue;
+                    }
                     let shared = names.iter().find(|n| {
                         readers.get(n.as_str()).is_some_and(|r| r.iter().any(|&j| j != idx)) || outputs.contains(n.as_str())
                     });

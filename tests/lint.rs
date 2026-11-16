@@ -218,6 +218,66 @@ fn elements_of_an_array_are_not_one_signal() {
 }
 
 #[test]
+fn an_input_and_a_register_of_it_in_one_expression_are_reported_as_latency() {
+    let found = categories_of_ov("latbad", "module L(input clk, input logic a, output logic y);
+  logic r;
+  always_ff @(posedge clk) r <= a;
+  assign y = a & r;
+endmodule
+");
+    assert!(found.iter().any(|(c, m)| c == "latency" && m.contains("'a' is 0 register(s) from 'a'")), "{found:?}");
+}
+
+#[test]
+fn a_delayed_input_in_one_expression_is_not_reported_as_latency() {
+    let found = categories_of_ov("latdelay", "module L(input clk, input logic a, output logic y);
+  clock clk;
+  logic r;
+  always_ff @(posedge clk) r <= a;
+  assign y = a.delay(1) & r;
+endmodule
+");
+    assert!(!found.iter().any(|(c, _)| c == "latency"), "{found:?}");
+}
+
+#[test]
+fn a_signal_on_a_loop_of_registers_has_no_latency_to_compare() {
+    let found = categories_of_ov("latloop", "module L(input clk, input logic a, output logic y);
+  logic r;
+  always_ff @(posedge clk) r <= r + a;
+  assign y = a & r;
+endmodule
+");
+    assert!(!found.iter().any(|(c, _)| c == "latency"), "{found:?}");
+}
+
+#[test]
+fn a_blocking_assignment_in_always_ff_is_reported() {
+    let found = categories_of("ffblocking", "module b(input clk, input logic d, output logic q);
+  logic r;
+  always_ff @(posedge clk) begin
+    r = d;
+    q <= r;
+  end
+endmodule
+");
+    assert!(found.iter().any(|(c, m)| c == "process" && m.contains("blocking assignment (=) to 'r' inside always_ff")), "{found:?}");
+}
+
+#[test]
+fn a_non_blocking_assignment_in_always_ff_is_not_reported() {
+    let found = categories_of("ffnonblocking", "module b(input clk, input logic d, output logic q);
+  logic r;
+  always_ff @(posedge clk) begin
+    r <= d;
+    q <= r;
+  end
+endmodule
+");
+    assert!(!found.iter().any(|(c, _)| c == "process"), "{found:?}");
+}
+
+#[test]
 fn two_assignments_drive_the_same_signal() {
     let found = categories_of("driver", "module d(input logic a, output logic y);\n  assign y = a;\n  assign y = ~a;\nendmodule\n");
     assert!(found.iter().any(|(c, m)| c == "driver" && m.contains("'y' is driven from several places (assign and assign)")), "{found:?}");

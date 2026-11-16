@@ -81,6 +81,14 @@ elements of an array are not followed by their index: a loop that goes through a
 block does not count the reads of the names it assigns (`t = 0; if (a) t = t + 1;` sets `t` before it reads it). The
 conditions of an `if` are not followed yet.
 
+## latency
+
+The operands of one expression reach it after a different number of registers: `y = a & r;` where `r <= a;` (the input
+`a` is current, `r` is one cycle late). The check counts the registers from each input port of the module. A signal
+on a loop of registers, or reached by two paths of different lengths, has no latency and is not compared. Where the
+mix is intended (a window such as `launch || launch_r`, or a comparison with the registered value), keep it and add
+`// ovc: ignore latency`; otherwise write the earlier value with `.delay(n)`. This is a warning.
+
 ## latch
 
 A combinational block does not assign a signal on every path, so the signal keeps its value: a latch. Give the signal a
@@ -104,6 +112,10 @@ and check the port name against the module.
 
 A process mixes blocking (`=`) and non-blocking (`<=`) assignments to the same kind of signal, or gives a register an
 initial value that synthesis ignores. Use `<=` in clocked blocks and `=` in combinational blocks.
+
+A blocking assignment (`=`) inside an `always_ff` is reported as a warning, whether or not another process reads the
+name: a register takes its value at the clock edge with `<=`. A local temporary that is only read in the same block is
+not a register, and `=` is correct there only if the value is read after it is written in the block.
 
 ## slice
 
