@@ -82,7 +82,8 @@ impl Parser {
                 self.accept("unsigned");
             }
             self.skip_param_range()?;
-            kind
+            // a parameter of an integer type is a constant value, as `int` is
+            if matches!(kind.as_str(), "integer" | "byte" | "shortint" | "longint" | "logic" | "reg" | "bit") { "int".to_string() } else { kind }
         };
         let name = self.ident()?;
         let bound = if matches!(kind.as_str(), "module" | "config") && self.accept(":") { Some(self.ident()?) } else { None };

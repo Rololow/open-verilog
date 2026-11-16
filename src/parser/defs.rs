@@ -73,7 +73,16 @@ impl Parser {
                 out.fns.extend(items);
             } else if self.at("function") {
                 let at = (self.tok().line, self.tok().col);
-                let item = self.parse_function_def()?;
+                // the statements of the Open Verilog form first; a SystemVerilog body (assignments, if/else) otherwise
+                let start = self.i;
+                let item = match self.parse_function_def() {
+                    Ok(item) => item,
+                    // both forms refused: the SystemVerilog one is what most sources are written in
+                    Err(_) => {
+                        self.i = start;
+                        self.parse_sv_function()?
+                    }
+                };
                 self.define_fns(std::slice::from_ref(&item), at)?;
                 out.fns.push(item);
             } else if self.at("struct") {

@@ -50,3 +50,24 @@ fn a_function_with_a_loop_in_its_body_is_refused_as_not_analyzed() {
     let err = common::error_of(text);
     assert!(err.contains("a function statement is an assignment, an if or a declaration, not 'for'"), "{err}");
 }
+
+#[test]
+fn a_function_of_a_package_with_assignments_is_read_and_called_by_its_package_name() {
+    let sv = sv_of(
+        "package P;\n\
+         \x20 function automatic [7:0] mx(input [7:0] p, input [7:0] q);\n\
+         \x20   if (p > q) mx = p; else mx = q;\n\
+         \x20 endfunction\n\
+         endpackage\n\
+         module Q(input logic [7:0] a, input logic [7:0] b, output logic [7:0] y);\n\
+         \x20 assign y = P::mx(a, b);\n\
+         endmodule\n",
+    );
+    assert!(sv.contains("assign y = 8'(a > b ? a : b);"), "{sv}");
+}
+
+#[test]
+fn an_integer_parameter_is_a_constant_value_of_its_width() {
+    let sv = common::sv_of("module R #(parameter integer W = 8) (input logic [W-1:0] a, output logic [W-1:0] y);\n  assign y = a;\nendmodule\n");
+    assert!(sv.contains("input logic [7:0] a"), "the parameter is folded to its value: {sv}");
+}

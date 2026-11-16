@@ -15,6 +15,8 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 - SystemVerilog `function`s inside a module are read: the header with its inputs in the parentheses or after it, a return
   of dimensions alone (`function [15:0] f;`), and a body of assignments and `if`/`else` in `begin`/`end`. A call is inlined as
   a conditional. A body with a loop is still refused, and its module stays not analyzed.
+- A function of a package is read the same way. A parameter of an integer type (`parameter integer W = 8`, also `logic`,
+  `bit`, `byte`, `shortint`, `longint`, `reg`) is a constant value, as `int` is.
 
 ### Fixed
 - A deeply nested source (a long chain of parentheses, or of `if`s) is compiled. The parser ran on threads with the
