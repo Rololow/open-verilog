@@ -131,6 +131,22 @@ impl Category {
     }
 }
 
+/// A finding of the checks: its category, and its text (`file:line:col: warning: message`). The category is given by the
+/// check that finds it, not read from the text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub category: Category,
+    pub text: String,
+}
+
+impl Diagnostic {
+    /// A finding whose category is read from its message: the findings of the elaborator and of the domain check.
+    pub fn classified(text: String) -> Diagnostic {
+        let message = crate::lint::parse_warning(&text).map(|(_, _, _, m)| m).unwrap_or_else(|| text.clone());
+        Diagnostic { category: Category::of_message(&message), text }
+    }
+}
+
 /// The levels of the project: the `[lints]` of `ovc.toml` in the working directory, or none when there is no such file.
 pub fn project_levels() -> Result<Levels, String> {
     match std::fs::read_to_string("ovc.toml") {

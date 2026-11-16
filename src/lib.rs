@@ -30,7 +30,7 @@ pub mod toml;
 
 use std::collections::{HashMap, HashSet};
 use ast::File;
-use diag::{Category, Level, Levels};
+use diag::{Level, Levels};
 use error::{Error, Result};
 
 /// The output of a project: the SystemVerilog of each origin file, the whole design, and the side outputs.
@@ -110,7 +110,7 @@ fn check_imports(source: &File) -> Result<()> {
 
 /// The result of a lint: the warnings and the errors of the checks, and the top modules that could not be elaborated.
 pub struct LintOutput {
-    pub warnings: Vec<String>,
+    pub warnings: Vec<diag::Diagnostic>,
     pub errors: Vec<Error>,
     pub skipped: Vec<Error>,
 }
@@ -128,8 +128,8 @@ pub fn lint_parsed(parsed: Vec<File>, top: Option<&ast::DType>) -> Result<LintOu
     library::merge(&mut source)?;
     check_imports(&source)?;
     let wrapped = checks::wrapped_in(&source);
-    let mut early = clashes;
-    early.extend(sv_selects_of_expressions(&source));
+    let mut early: Vec<diag::Diagnostic> = clashes.into_iter().map(diag::Diagnostic::classified).collect();
+    early.extend(sv_selects_of_expressions(&source).into_iter().map(diag::Diagnostic::classified));
     let with_early = |out: LintOutput| LintOutput { warnings: early.iter().cloned().chain(out.warnings).collect(), ..out };
     if let Some(root) = top {
         return Ok(with_early(match lint_top(&source, Some(root), &wrapped) {
@@ -193,12 +193,12 @@ fn sv_selects_of_expressions(source: &File) -> Vec<String> {
 }
 
 /// The checks of one elaboration (the whole design, or one top module).
-fn lint_top(source: &File, top: Option<&ast::DType>, wrapped: &checks::Wrapped) -> Result<(Vec<String>, Vec<Error>)> {
+fn lint_top(source: &File, top: Option<&ast::DType>, wrapped: &checks::Wrapped) -> Result<(Vec<diag::Diagnostic>, Vec<Error>)> {
     let elab::Elaborated { mut modules, warnings, handshakes, envs, .. } = elab::elaborate(source, "<lint>", false, false, top)?;
     hier::thread(&mut modules, "<lint>")?;
     let (domain_warnings, errors) = domains::check_all(&modules, &handshakes, &declared_resets(&envs));
-    let mut all = warnings;
-    all.extend(domain_warnings);
+    let mut all: Vec<diag::Diagnostic> = warnings.into_iter().map(diag::Diagnostic::classified).collect();
+    all.extend(domain_warnings.into_iter().map(diag::Diagnostic::classified));
     all.extend(checks::check(&modules, &envs, wrapped));
     Ok((all, errors))
 }
@@ -238,9 +238,10 @@ fn top_modules(source: &File) -> Vec<String> {
 
 /// The fate of one finding: an error at `deny`, kept as a warning at `warn`, dropped at `allow` or when an
 /// `ovc: ignore` on its line silences it. A text that is not a positioned warning is kept as it is.
-fn classify(w: String, levels: &Levels, sources: &mut HashMap<String, Vec<String>>) -> Result<Option<String>> {
+fn classify(d: diag::Diagnostic, levels: &Levels, sources: &mut HashMap<String, Vec<String>>) -> Result<Option<String>> {
+    let w = d.text;
+    let cat = d.category;
     let Some((file, line, col, message)) = lint::parse_warning(&w) else { return Ok(Some(w)) };
-    let cat = Category::of_message(&message);
     let finding = lint::Finding { category: cat.as_str(), file: file.clone(), line, col, message: message.clone() };
     match levels.get(cat) {
         _ if lint::silenced(&finding, sources) => Ok(None),
@@ -275,9 +276,9 @@ pub fn compile_parsed(parsed: Vec<File>, options: &Options) -> Result<Compiled> 
     // every finding gets its level: `deny` is an error, `warn` is shown with the warnings, `allow` is dropped
     let mut sources = HashMap::new();
     let mut shown = Vec::new();
-    let found = checks::check(&modules, &envs, &checks::wrapped_in(&source)).into_iter().chain(warnings);
-    for w in found {
-        if let Some(w) = classify(w, &options.levels, &mut sources)? {
+    let found = checks::check(&modules, &envs, &checks::wrapped_in(&source)).into_iter().chain(warnings.into_iter().map(diag::Diagnostic::classified));
+    for d in found {
+        if let Some(w) = classify(d, &options.levels, &mut sources)? {
             shown.push(w);
         }
     }
