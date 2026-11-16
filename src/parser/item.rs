@@ -258,6 +258,7 @@ impl Parser {
                     }
                 }
             }
+            "function" => Ok(vec![self.parse_sv_function()?]),
             "memmap" if self.peek(1).kind == Kind::Ident => {
                 self.i += 1;
                 let name = self.ident()?;

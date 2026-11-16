@@ -12,6 +12,9 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 - `process`: a blocking assignment (`=`) inside an `always_ff` is a warning, whatever the other processes read.
 - `latency`: the operands of one expression reach it after a different number of registers from the same input (`a & r`
   with `r <= a;`), so a warning asks for `.delay(n)`. Counted within one module; a signal on a register loop is not compared.
+- SystemVerilog `function`s inside a module are read: the header with its inputs in the parentheses or after it, a return
+  of dimensions alone (`function [15:0] f;`), and a body of assignments and `if`/`else` in `begin`/`end`. A call is inlined as
+  a conditional. A body with a loop is still refused, and its module stays not analyzed.
 
 ### Fixed
 - A deeply nested source (a long chain of parentheses, or of `if`s) is compiled. The parser ran on threads with the

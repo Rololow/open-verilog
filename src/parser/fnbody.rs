@@ -6,7 +6,7 @@
 use super::Parser;
 use std::collections::HashMap;
 
-use crate::ast::{Expr, Item, ItemKind, Stmt};
+use crate::ast::{DType, Expr, Item, ItemKind, Stmt};
 use crate::error::{Error, Result};
 use crate::lexer::Kind;
 use crate::pipeline::rewrite::map_expr;
@@ -237,4 +237,181 @@ fn subst_stmt(s: &Stmt, bound: &[(String, Expr)]) -> Stmt {
         })
     })
     .unwrap_or_else(|_| s.clone())
+}
+
+/// A statement of a SystemVerilog function body: a blocking assignment, or an if with its two branches.
+enum SvStmt {
+    Assign(String, Expr),
+    If(Expr, Vec<SvStmt>, Vec<SvStmt>),
+}
+
+/// The value of a name in a function environment (its last assignment).
+fn sv_get<'a>(env: &'a [(String, Expr)], name: &str) -> Option<&'a Expr> {
+    env.iter().find(|(n, _)| n == name).map(|(_, e)| e)
+}
+
+fn sv_put(env: &mut Vec<(String, Expr)>, name: &str, value: Expr) {
+    match env.iter_mut().find(|(n, _)| n == name) {
+        Some(slot) => slot.1 = value,
+        None => env.push((name.to_string(), value)),
+    }
+}
+
+/// Runs the statements on the environment: an assignment sets its name, and an if runs both branches on copies and
+/// keeps, for each name both branches set, a conditional expression. A name that only one branch sets is unknown after.
+fn sv_run(stmts: &[SvStmt], env: &mut Vec<(String, Expr)>) {
+    for s in stmts {
+        match s {
+            SvStmt::Assign(name, e) => {
+                let value = subst(e, env);
+                sv_put(env, name, value);
+            }
+            SvStmt::If(cond, then, els) => {
+                let cond = subst(cond, env);
+                let mut env_then = env.clone();
+                sv_run(then, &mut env_then);
+                let mut env_else = env.clone();
+                sv_run(els, &mut env_else);
+                let mut names: Vec<String> = Vec::new();
+                for (n, _) in env_then.iter().chain(env_else.iter()) {
+                    if !names.contains(n) {
+                        names.push(n.clone());
+                    }
+                }
+                for n in names {
+                    match (sv_get(&env_then, &n), sv_get(&env_else, &n)) {
+                        (Some(a), Some(b)) if a == b => {
+                            let value = a.clone();
+                            sv_put(env, &n, value);
+                        }
+                        (Some(a), Some(b)) => {
+                            let value = Expr::Ternary(Box::new(cond.clone()), Box::new(a.clone()), Box::new(b.clone()));
+                            sv_put(env, &n, value);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Parser {
+    /// A SystemVerilog function of a module: the header with its inputs in the parentheses, or with them declared after
+    /// it, a body of blocking assignments and ifs, and endfunction. The body becomes one expression, which the calls
+    /// inline. Anything else is refused, and its module part stays not analyzed.
+    pub(super) fn parse_sv_function(&mut self) -> Result<ItemKind> {
+        self.expect("function")?;
+        if !self.accept("automatic") {
+            self.accept("static");
+        }
+        // a return of dimensions alone (`function [15:0] f;`) is an implicit logic
+        let ret = if self.at("[") { self.parse_dtype(true)? } else { self.parse_dtype(false)? };
+        let name = self.ident()?;
+        let typed: Vec<(DType, String)> = if self.accept("(") {
+            let typed = self.comma_list(")", |p| {
+                p.accept("input");
+                let ty = p.parse_dtype(true)?;
+                Ok((ty, p.ident()?))
+            })?;
+            self.expect(";")?;
+            typed
+        } else {
+            self.expect(";")?;
+            let mut typed = Vec::new();
+            while self.accept("input") {
+                let ty = self.parse_dtype(true)?;
+                loop {
+                    typed.push((ty.clone(), self.ident()?));
+                    if !self.accept(",") {
+                        break;
+                    }
+                }
+                self.expect(";")?;
+            }
+            typed
+        };
+        let (ptypes, params): (Vec<DType>, Vec<String>) = typed.into_iter().unzip();
+        let mut stmts = Vec::new();
+        while !self.at("endfunction") {
+            if self.tok().kind == Kind::Eof {
+                return Err(self.fail("'endfunction' missing"));
+            }
+            if self.accept("begin") {
+                stmts.extend(self.parse_sv_block(&name)?);
+            } else {
+                stmts.extend(self.parse_sv_stmt(&name)?);
+            }
+        }
+        self.expect("endfunction")?;
+        let mut env = Vec::new();
+        sv_run(&stmts, &mut env);
+        let body = match sv_get(&env, &name) {
+            Some(e) => e.clone(),
+            None => return Err(self.fail("a function must assign its result on every path")),
+        };
+        let ret = if ret.packed.is_empty() { None } else { Some(ret) };
+        Ok(ItemKind::Fn { name, params, ptypes, ret, body, override_at: None })
+    }
+
+    /// The statements of a begin ... end block (the begin is consumed, and so is the end).
+    fn parse_sv_block(&mut self, result: &str) -> Result<Vec<SvStmt>> {
+        let mut stmts = Vec::new();
+        while !self.accept("end") {
+            if self.tok().kind == Kind::Eof {
+                return Err(self.fail("'end' missing"));
+            }
+            if self.accept("begin") {
+                stmts.extend(self.parse_sv_block(result)?);
+            } else {
+                stmts.extend(self.parse_sv_stmt(result)?);
+            }
+        }
+        Ok(stmts)
+    }
+
+    /// The branch of an if: a block or one statement.
+    fn parse_sv_branch(&mut self, result: &str) -> Result<Vec<SvStmt>> {
+        if self.accept("begin") {
+            return self.parse_sv_block(result);
+        }
+        self.parse_sv_stmt(result)
+    }
+
+    /// One statement: an assignment, a return (an assignment to the function name), an if, or a local declaration (which
+    /// has no value until it is assigned).
+    fn parse_sv_stmt(&mut self, result: &str) -> Result<Vec<SvStmt>> {
+        if self.accept("if") {
+            self.expect("(")?;
+            let cond = self.parse_expr(0)?;
+            self.expect(")")?;
+            let then = self.parse_sv_branch(result)?;
+            let els = if self.accept("else") { self.parse_sv_branch(result)? } else { Vec::new() };
+            return Ok(vec![SvStmt::If(cond, then, els)]);
+        }
+        if self.accept("return") {
+            let e = self.parse_expr(0)?;
+            self.expect(";")?;
+            return Ok(vec![SvStmt::Assign(result.to_string(), e)]);
+        }
+        if self.at("logic") || self.at("reg") || self.at("int") || self.at("integer") || self.at("bit") {
+            self.parse_dtype(true)?;
+            loop {
+                self.ident()?;
+                if !self.accept(",") {
+                    break;
+                }
+            }
+            self.expect(";")?;
+            return Ok(Vec::new());
+        }
+        let target = self.ident()?;
+        if !self.at("=") {
+            return Err(self.fail(format!("a function statement is an assignment, an if or a declaration, not '{target}'")));
+        }
+        self.expect("=")?;
+        let e = self.parse_expr(0)?;
+        self.expect(";")?;
+        Ok(vec![SvStmt::Assign(target, e)])
+    }
 }
