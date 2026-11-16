@@ -5,6 +5,8 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-16
+
 ### Added
 - `ovc-lsp` folds the `{ }` blocks of a file (folding ranges): each block that spans more than one line folds from its
   brace to its closing brace. A file that does not lex has no folds.
