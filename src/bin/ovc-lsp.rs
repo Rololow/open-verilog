@@ -119,6 +119,63 @@ fn range_at(line: usize, col: usize, len: usize) -> Range {
     Range::new(start, end)
 }
 
+/// The quoted texts of a message: `'a'` and `'b'` in `unknown 'a' (did you mean 'b'?)`.
+fn quoted_texts(message: &str) -> Vec<&str> {
+    message.split('\'').enumerate().filter(|(i, _)| i % 2 == 1).map(|(_, s)| s).collect()
+}
+
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '$'
+}
+
+/// The character column of the first whole word `word` in `line`.
+fn find_word(line: &str, word: &str) -> Option<usize> {
+    line.match_indices(word).find(|(i, _)| {
+        let before = line[..*i].chars().next_back();
+        let after = line[i + word.len()..].chars().next();
+        !before.is_some_and(is_word_char) && !after.is_some_and(is_word_char)
+    }).map(|(i, _)| line[..i].chars().count())
+}
+
+/// The quick fix of a diagnostic, when the compiler's message gives one: a missing `;` is added where the error is, and
+/// a misspelled name is replaced by the suggestion of the message (`(did you mean 'assign'?)`). The misspelled name is
+/// the quoted text of the message that the line of the error has as a whole word.
+fn quick_fix(text: &str, diag: &Diagnostic) -> Option<(String, TextEdit)> {
+    let line = diag.range.start.line;
+    if diag.message.contains("expected ';' after") {
+        let at = Range::new(diag.range.start, diag.range.start);
+        return Some(("Add ';'".into(), TextEdit::new(at, ";".into())));
+    }
+    let suggestion = diag.message.split("did you mean '").nth(1)?.split('\'').next()?;
+    let line_text = text.lines().nth(line as usize)?;
+    let bad = quoted_texts(&diag.message).into_iter().filter(|q| *q != suggestion).find(|q| find_word(line_text, q).is_some())?;
+    let col = find_word(line_text, bad)? as u32;
+    let range = Range::new(Position::new(line, col), Position::new(line, col + bad.chars().count() as u32));
+    Some((format!("Replace '{bad}' with '{suggestion}'"), TextEdit::new(range, suggestion.to_string())))
+}
+
+/// The blocks of a file that span more than one line, as (first line, last line), 0-based: a `{` and the `}` that
+/// closes it. A file that does not lex has no folds.
+fn folds_of(text: &str) -> Vec<(u32, u32)> {
+    let Ok(tokens) = lex(text, "<lsp>") else { return Vec::new() };
+    let mut open: Vec<usize> = Vec::new();
+    let mut out = Vec::new();
+    for t in tokens.iter().filter(|t| t.kind == Kind::Op) {
+        match t.text.as_str() {
+            "{" => open.push(t.line),
+            "}" => {
+                if let Some(start) = open.pop() {
+                    if start < t.line {
+                        out.push(((start - 1) as u32, (t.line - 1) as u32));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// `path:line:col: warning: message`, as the compiler prints its warnings.
 fn parse_warning(text: &str) -> Option<(String, usize, usize, String)> {
     let (head, message) = text.split_once(": warning: ")?;
@@ -396,6 +453,8 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 completion_provider: Some(CompletionOptions { trigger_characters: Some(vec![".".into()]), ..Default::default() }),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
@@ -494,6 +553,46 @@ impl LanguageServer for Backend {
             })
             .collect();
         Ok(Some(DocumentSymbolResponse::Flat(found)))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = params.text_document.uri;
+        let Some(path) = path_of(&uri) else { return Ok(None) };
+        let Some(text) = text_of(&*self.state.lock().await, &path) else { return Ok(None) };
+        let actions = params
+            .context
+            .diagnostics
+            .iter()
+            .filter_map(|d| quick_fix(&text, d).map(|(title, edit)| (d, title, edit)))
+            .map(|(d, title, edit)| {
+                CodeActionOrCommand::CodeAction(CodeAction {
+                    title,
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![d.clone()]),
+                    edit: Some(WorkspaceEdit { changes: Some(HashMap::from([(uri.clone(), vec![edit])])), ..Default::default() }),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        Ok(Some(actions))
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let Some(path) = path_of(&params.text_document.uri) else { return Ok(None) };
+        let Some(text) = text_of(&*self.state.lock().await, &path) else { return Ok(None) };
+        let blocks = tokio::task::spawn_blocking(move || folds_of(&text)).await.unwrap_or_default();
+        let found = blocks
+            .into_iter()
+            .map(|(start_line, end_line)| FoldingRange {
+                start_line,
+                start_character: None,
+                end_line,
+                end_character: None,
+                kind: Some(FoldingRangeKind::Region),
+                collapsed_text: None,
+            })
+            .collect();
+        Ok(Some(found))
     }
 
     async fn symbol(&self, params: WorkspaceSymbolParams) -> Result<Option<Vec<SymbolInformation>>> {
@@ -851,6 +950,59 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_block_over_several_lines_folds_from_its_brace_to_its_closing_brace() {
+        // nested blocks fold each on its own: the closing braces come first
+        let src = "module M {\n  always_ff {\n    if (a) {\n      x;\n    }\n  }\n}\nmodule N { }\n";
+        assert_eq!(folds_of(src), vec![(2, 4), (1, 5), (0, 6)]);
+    }
+
+    fn diag_at(line: usize, col: usize, message: &str) -> Diagnostic {
+        Diagnostic { range: range_at(line, col, 1), message: message.into(), ..Default::default() }
+    }
+
+    #[test]
+    fn a_misspelled_statement_is_replaced_by_the_suggestion_of_its_message() {
+        let text = "module M(input logic a, output logic y) {\n  assignn y = a;\n}\n";
+        let d = diag_at(2, 3, "unknown statement or type 'assignn' (did you mean 'assign'?)");
+        let (title, edit) = quick_fix(text, &d).expect("a fix");
+        assert_eq!(title, "Replace 'assignn' with 'assign'");
+        assert_eq!(edit.range, Range::new(Position::new(1, 2), Position::new(1, 9)));
+        assert_eq!(edit.new_text, "assign");
+    }
+
+    #[test]
+    fn a_bundle_field_is_found_on_its_line_not_the_bundle_name() {
+        let text = "bundle S { output logic valid; input logic ready; }\nmodule M(master S o) {\n  assign o.vald = 1;\n}\n";
+        let d = diag_at(3, 12, "bundle 'S' has no field 'vald' (did you mean 'valid'?)");
+        let (title, edit) = quick_fix(text, &d).expect("a fix");
+        assert_eq!(title, "Replace 'vald' with 'valid'");
+        assert_eq!(edit.range.start, Position::new(2, 11));
+    }
+
+    #[test]
+    fn a_missing_semicolon_is_added_where_the_error_is() {
+        let text = "module M(input clk, output logic [7:0] q) {\n  clock clk;\n\n  always_ff @(posedge clk) {\n    q <= q + 1\n  }\n}\n";
+        let d = diag_at(5, 15, "expected ';' after '1'");
+        let (title, edit) = quick_fix(text, &d).expect("a fix");
+        assert_eq!(title, "Add ';'");
+        assert_eq!(edit.range, Range::new(Position::new(4, 14), Position::new(4, 14)));
+        assert_eq!(edit.new_text, ";");
+    }
+
+    #[test]
+    fn a_message_without_a_suggestion_has_no_quick_fix() {
+        let text = "module M(input logic a, output logic y) {\n  assign y = a;\n}\n";
+        assert!(quick_fix(text, &diag_at(2, 3, "unknown identifier 'zz'")).is_none());
+    }
+
+    #[test]
+    fn a_file_that_does_not_lex_has_no_folds() {
+        // the block would fold (lines 0 to 2) if the file lexed: the unterminated string is what refuses it
+        assert!(folds_of("module M {\n  logic s = \"unterminated;\n}\n").is_empty());
+        assert_eq!(folds_of("module M {\n  logic s = \"closed\";\n}\n"), vec![(0, 2)]);
+    }
 
     #[test]
     fn every_finding_has_its_category_and_the_wiki_section_that_explains_it() {
