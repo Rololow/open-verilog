@@ -1,6 +1,6 @@
 # Open Verilog
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24311669.svg)](https://doi.org/10.5281/zenodo.24311669)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24311668.svg)](https://doi.org/10.5281/zenodo.24311668)
 
 **Write hardware in a language that catches design mistakes before they reach simulation, and keep every line of
 SystemVerilog you already have.**
