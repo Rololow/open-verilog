@@ -1,116 +1,59 @@
-# ovc (Rust)
+# Open Verilog
 
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24311669.svg)](https://doi.org/10.5281/zenodo.24311669)
 
-Compiler for **Open Verilog** (`.ov`), a SystemVerilog extension, to plain SystemVerilog, and its language server
-`ovc-lsp`. This is the Rust port of the Python reference compiler (`ovc/` of the original repository), which stays the
-reference for behaviour and output: a construct is done when the compiler's output for the examples is byte-identical
-to the reference's.
+**Write hardware in a language that catches design mistakes before they reach simulation, and keep every line of
+SystemVerilog you already have.**
 
-The compiler uses the standard library only; the language server uses `tower-lsp` and `tokio`.
+Open Verilog (`.ov`) is a SystemVerilog extension. Its compiler, `ovc`, turns it into plain SystemVerilog that any
+simulator or synthesis tool accepts, and it lints existing SystemVerilog projects in place.
+
+## Why Open Verilog
+
+- **Clock-domain crossings are checked by the compiler.** A signal read in another clock domain is an error unless the
+  crossing is explicit. Resets that do not match their clock domain are reported.
+- **Undriven outputs are errors, not surprises.** A port nobody drives stops the build.
+- **A linter that knows the hardware.** Width and sign mismatches, latches, multiple drivers, unbalanced pipeline
+  latencies and blocking assignments in `always_ff` are reported with their position, and each category can be set to
+  `allow`, `warn` or `deny`.
+- **Compiles to readable SystemVerilog.** The output keeps a stable layout, so a generated file can be reviewed, diffed
+  and debugged like hand-written code.
+- **Built-in high-level constructs.** Pipelines with valid bits, stalls and flushes, finite state machines, structs,
+  enums, bundles, configs, pure functions that are inlined at each call, testbenches and probes are part of the
+  language, not a library you have to maintain.
+- **Migrate at your own pace.** It accepts existing SystemVerilog: `ovc lint` checks a SystemVerilog project directly,
+  and the parts it does not understand yet are reported, not silently skipped.
+- **Editor support out of the box.** The language server gives diagnostics as you type, go to definition, and hover
+  information. A VS Code extension installs and starts it.
 
 ## Install
 
-Each release (`v*` tags) publishes, for Windows, Linux and macOS (Intel and Apple Silicon), the two binaries `ovc`
-and `ovc-lsp`, a Windows installer (`ovc-setup-<version>.exe`, per user, adds `ovc` to the `PATH`) and a `SHA256SUMS`
-file. The VS Code extension downloads and checks them itself (command *Open Verilog: Install the compiler*).
-
-From source:
+Pre-built binaries for Windows, Linux and macOS (Intel and Apple Silicon) are attached to each release, with a
+Windows installer and a `SHA256SUMS` file. From source:
 
 ```
 cargo build --release
 ```
 
-## Run
+## Quick start
 
 ```
-target/release/ovc design.ov -o design.sv              # one file
-target/release/ovc a.ov b.ov                            # several files, SystemVerilog concatenated on stdout
-target/release/ovc build src/ -o out                    # every .ov under src/: one .sv per file, and a file list
-target/release/ovc design.ov --emit-tests tb.sv         # the `test` blocks as a testbench
-target/release/ovc design.ov --emit-probes probes.sv    # the `probe` blocks, bound into the design
-target/release/ovc design.ov --dump-pipeline            # the stage table of each pipeline (stderr)
-target/release/ovc design.ov --no-asserts               # without the simulation-only checks
-target/release/ovc design.ov --werror                   # warnings are errors
+ovc design.ov -o design.sv        # compile to SystemVerilog
+ovc build src/ -o out             # every .ov under src/, one .sv per file, and a file list
+ovc lint design.sv                # check a SystemVerilog design
 ```
 
-Files are compiled in parallel, one thread per file; the output keeps the order of the arguments.
+The full command line, the language and the lint categories are in the wiki:
+<https://github.com/Rololow/open-verilog/wiki>
 
-A config can take its values from a manifest, `config V3 from "v3.toml" { K = array.k; }`: the file is read next to
-the source, its entries are named by their keys (`array.k`) in the config and by `C.section.entry` through a config
-parameter (`C.tables.exp_residual`).
+## Cite
 
-## Language server
+If you use Open Verilog in academic work, see [`CITATION.cff`](CITATION.cff).
 
-`ovc-lsp` speaks LSP on stdio. It compiles the `.ov` files of the workspace together, as `ovc build` does, and gives:
+## Contributing
 
-- diagnostics (errors and warnings, with positions), refreshed shortly after the last edit;
-- go to definition of modules, enums, structs, bundles, configs, functions and constants, in the same file first and
-  then in the others;
-- hover: the declaration line of the identifier under the cursor, with its file and line.
-
-The VS Code extension (`vscode-open-verilog`) starts it; any LSP client can.
-
-## Documentation
-
-The wiki (language, command line, lint, status): <https://github.com/Rololow/open-verilog/wiki>
-
-## Status
-
-All 24 examples in `examples/` compile. 21 of them produce output identical to the reference (`expected/`), and
-these are checked by the golden tests in `tests/golden.rs`:
-
-`adder`, `bits`, `bundle`, `cdc`, `classes`, `config`, `counter`, `fsm`, `hier`, `isa`, `loops`, `methods`, `mixed`,
-`nested`, `pipe`, `probes`, `structs`, `systolic`, `testbench`, `types`, `widths`.
-
-`chain`, `pipeline` and `qol` compile but are not golden: their pipelines name the valid bits and carried registers
-after the stages (`ov_valid_add`, `s__add`) instead of by index, a deliberate change for readability. Their behaviour
-was checked by simulation.
-
-On large designs the output is not always textually the reference's (for example the Rust compiler writes no
-`// Generated by ovc` header and keeps a signal for some `val`s the reference inlines). Check a design in simulation
-before replacing the Python compiler with this one.
-
-### Not yet implemented
-
-- The lint of plain SystemVerilog projects has no way to declare their clock and reset yet: their reset checks see nothing.
-- The coverage of a `match` inside an `always` block.
-
-Anything not supported is reported with a positioned error, not silently dropped.
-
-## Layout
-
-| Module | Role |
-| --- | --- |
-| `lexer`, `parser` | tokens; recursive descent over the whole grammar used by the examples |
-| `ast` | the syntax tree, shared by elaboration and emission |
-| `elab` | parameters, constant folding, generate, specialisation, structs, bundles, configs, enums, `fsm`, `val` widths |
-| `toml` | the manifests of `config ... from "file.toml"` |
-| `hier` | connections across the hierarchy: reads, drives and method calls become ports |
-| `pipeline` | stage lowering: carries, valid bits, stall and flush, simulation checks |
-| `emit` | SystemVerilog text, with the reference's layout and parentheses rules |
-| `testgen`, `probes` | the testbench and the probe modules |
-| `library` | the standard library loader |
-| `bin/ovc-lsp` | the language server |
-| `installer/` | the Windows installer script and the signing notes |
-
-## Tests
-
-```
-cargo test
-cargo clippy --all-targets
-```
-
-The golden tests compare with `expected/`, byte for byte (the repository stores LF line endings on every platform,
-see `.gitattributes`). Unit tests in `tests/` cover diagnostics (positions, messages), the pipeline, declarations,
-manifest configs, struct views, the testbench, the probes and the library.
-
-## Development notes
-
-- The reference is the Python compiler: when the two differ on a construct the examples use, the Rust output is
-  changed to match.
-- Every new feature starts from an example in `examples/` and its expected output in `expected/`.
+Architecture, test layout, development rules and the current status are in [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Licence
 
-MIT, see `LICENSE`.
+MIT, see [`LICENSE`](LICENSE).
