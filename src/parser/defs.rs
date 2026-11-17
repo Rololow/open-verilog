@@ -73,7 +73,16 @@ impl Parser {
                 out.fns.extend(items);
             } else if self.at("function") {
                 let at = (self.tok().line, self.tok().col);
-                let item = self.parse_function_def()?;
+                // the statements of the Open Verilog form first; a SystemVerilog body (assignments, if/else) otherwise
+                let start = self.i;
+                let item = match self.parse_function_def() {
+                    Ok(item) => item,
+                    // both forms refused: the SystemVerilog one is what most sources are written in
+                    Err(_) => {
+                        self.i = start;
+                        self.parse_sv_function()?
+                    }
+                };
                 self.define_fns(std::slice::from_ref(&item), at)?;
                 out.fns.push(item);
             } else if self.at("struct") {
@@ -418,22 +427,28 @@ impl Parser {
         Ok(StructDef { name, params, fields, methods, pos, export: false, desc, field_desc, origin: self.file.clone() })
     }
 
+    /// The enum of a typedef (`enum [type] { members } Name;`, at the `enum` keyword).
+    pub(super) fn parse_typedef_enum(&mut self) -> Result<EnumDef> {
+        self.expect("enum")?;
+        let dtype = if self.at("{") { None } else { Some(self.parse_dtype(false)?) };
+        self.expect("{")?;
+        let members = self.comma_list("}", |p| {
+            let member = p.ident()?;
+            let value = if p.accept("=") { Some(p.parse_expr(0)?) } else { None };
+            Ok((member, value))
+        })?;
+        let name = self.ident()?;
+        self.expect(";")?;
+        let pos = (self.tok().line, self.tok().col);
+        Ok(EnumDef { name, dtype, members, pos })
+    }
+
     /// `typedef enum ... Name;`, `typedef struct ... Name;` or `typedef type Name;`
     fn parse_typedef(&mut self, out: &mut File) -> Result<()> {
         self.expect("typedef")?;
         if self.at("enum") {
-            self.i += 1;
-            let dtype = if self.at("{") { None } else { Some(self.parse_dtype(false)?) };
-            self.expect("{")?;
-            let members = self.comma_list("}", |p| {
-                let member = p.ident()?;
-                let value = if p.accept("=") { Some(p.parse_expr(0)?) } else { None };
-                Ok((member, value))
-            })?;
-            let name = self.ident()?;
-            self.expect(";")?;
-            let pos = (self.tok().line, self.tok().col);
-            out.enums.push(EnumDef { name, dtype, members, pos });
+            let def = self.parse_typedef_enum()?;
+            out.enums.push(def);
         } else if self.at("struct") {
             let mut def = self.parse_struct_def()?;
             def.name = self.ident()?;
@@ -466,6 +481,6 @@ impl Parser {
         self.expect(";")?;
         let body = self.parse_fn_body("endfunction")?;
         let ret = if ret.packed.is_empty() { None } else { Some(ret) };
-        Ok(ItemKind::Fn { name, params, ptypes, ret, body, override_at: None })
+        Ok(ItemKind::Fn { name, params, ptypes, ret, body, override_at: None, sv: None })
     }
 }

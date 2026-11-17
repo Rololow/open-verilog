@@ -87,8 +87,8 @@ pub(crate) fn build_struct(def: &StructDef, env: &Env, file: &str, name: &str) -
         .methods
         .iter()
         .filter_map(|m| match m {
-            ItemKind::Fn { name, params, ret, body, .. } => {
-                Some((name.clone(), FnDef { params: params.clone(), ret: ret.clone(), body: body.clone() }))
+            ItemKind::Fn { name, params, ret, body, sv, .. } => {
+                Some((name.clone(), FnDef { params: params.clone(), ret: ret.clone(), body: body.clone(), sv: sv.clone() }))
             }
             _ => None,
         })
@@ -459,18 +459,30 @@ pub fn elaborate(source: &File, file: &str, asserts: bool, cover: bool, top: Opt
     for decl in &source.consts {
         for d in &decl.decls {
             let init = d.init.as_ref().ok_or_else(|| Error::new(format!("constant '{}' has no value", d.name), file, 0, 0))?;
+            // a constant of a struct type is an assignment pattern: its fields are read from it by a struct parameter
+            if let pattern @ Expr::Pattern(_) = fold_expr(init, &globals) {
+                globals.define_global_expr(&d.name, pattern);
+                continue;
+            }
             // a constant has an integer value whatever the literal's form (`8'b1010` included)
             let v = match fold_expr(init, &globals) {
                 Expr::Num(text) => crate::lexer::number_value(&text),
                 other => int_of(&other),
             }
-            .ok_or_else(|| Error::new(format!("constant '{}' is not a constant", d.name), file, 0, 0))?;
+            .ok_or_else(|| {
+                let message = if source.structs.iter().any(|st| st.name == decl.dtype.name) {
+                    format!("constant '{}' has a struct type: its value must be an assignment pattern '{{...}}'", d.name)
+                } else {
+                    format!("constant '{}' is not a constant", d.name)
+                };
+                Error::new(message, file, 0, 0)
+            })?;
             globals.bind_int(&d.name, v);
         }
     }
     let top_fns = source.fns.iter().filter_map(|k| match k {
-        ItemKind::Fn { name, params, ret, body, .. } => {
-            Some((name.clone(), FnDef { params: params.clone(), ret: ret.clone(), body: body.clone() }))
+        ItemKind::Fn { name, params, ret, body, sv, .. } => {
+            Some((name.clone(), FnDef { params: params.clone(), ret: ret.clone(), body: body.clone(), sv: sv.clone() }))
         }
         _ => None,
     });
@@ -785,6 +797,15 @@ impl<'a> Design<'a> {
         }
         if let Some((name, pos)) = unknown_identifier(&module) {
             // a `fn` of the module used as a value: a fn of statements has no value (it is called as a statement)
+            // a body that could not run at a call (a loop bound that is not a constant there) is named as such
+            if let Some(ItemKind::Fn { sv: Some(_), .. }) = m.items.iter().map(|it| &it.kind).find(|k| matches!(k, ItemKind::Fn { name: n, .. } if n == &name)) {
+                return Err(Error::new(
+                    format!("'{name}' cannot be unrolled at this call: a loop bound or an index in it is not a constant here"),
+                    ctx_file(m, self.file),
+                    pos.0,
+                    pos.1,
+                ));
+            }
             if m.items.iter().any(|it| matches!(&it.kind, ItemKind::Fn { name: n, .. } | ItemKind::Proc { name: n, .. } if *n == name)) {
                 return Err(Error::new(
                     format!("a fn of statements has no `return` and is called as a statement: '{name}' is used as a value"),
@@ -840,6 +861,13 @@ impl<'a> Design<'a> {
         table.extend(local);
         let table = Rc::new(table);
         env.set_enums(table.clone());
+        // the types the module declares (typedef) are its own: bound before its ports use them
+        for it in &m.items {
+            if let ItemKind::LocalType { name, dtype } = &it.kind {
+                let folded = fold_dtype(dtype, &env);
+                env.bind_type(name, folded);
+            }
+        }
         let mut ports = Vec::new();
         let mut bundle_of: HashMap<String, BundleRef> = HashMap::new();
         // the handshake ports of the module: name, role, and how it is shown in the messages (`p.s` for `p_s`)
@@ -922,7 +950,13 @@ impl<'a> Design<'a> {
                 // `const int A = 0, B = 1;` with integer values: compile-time constants, nothing is emitted
                 ItemKind::Decl(d) if d.is_const => {
                     for x in &d.decls {
-                        if let Some(v) = x.init.as_ref().and_then(|e| int_of(&fold_expr(e, &env))) {
+                        // a constant of a struct type: its value (a pattern, or a function that returns one) gives each field
+                        if let (Some(init), Some(_)) = (x.init.as_ref(), env.struct_info(&d.dtype.name)) {
+                            let value = fold_expr(init, &env);
+                            bind_struct_param(&x.name, &d.dtype.name, &value, &env, &ctx)?;
+                            continue;
+                        }
+                        if let Some(v) = x.init.as_ref().and_then(|e| fold::const_of(e, &env)) {
                             env.define_const(&x.name, v);
                         }
                     }
@@ -1200,10 +1234,10 @@ impl<'a> Design<'a> {
                         continue;
                     }
                     // a constant with integer values is known at compile time (see above): not a declaration
-                    if d.is_const && d.decls.iter().all(|x| x.init.as_ref().is_some_and(|e| int_of(&fold_expr(e, env)).is_some())) {
+                    if d.is_const && d.decls.iter().all(|x| x.init.as_ref().is_some_and(|e| fold::const_of(e, env).is_some())) {
                         // in a loop body the module's pass above did not see it: it is defined here
                         for x in &d.decls {
-                            if let Some(v) = x.init.as_ref().and_then(|e| int_of(&fold_expr(e, env))) {
+                            if let Some(v) = x.init.as_ref().and_then(|e| fold::const_of(e, env)) {
                                 env.define_const(&x.name, v);
                             }
                         }
@@ -1432,6 +1466,8 @@ impl<'a> Design<'a> {
                 }
                 ItemKind::Comment(text) => out.push(at(ItemKind::Comment(text.clone()))),
                 ItemKind::SameDomain(names) => out.push(at(ItemKind::SameDomain(names.clone()))),
+                // bound by the module before its items (the types are folded into the declarations)
+                ItemKind::LocalType { .. } => {}
                 ItemKind::PortDomain { port, clock } => out.push(at(ItemKind::PortDomain { port: port.clone(), clock: clock.clone() })),
                 // expanded by the parser at each call
                 ItemKind::Proc { .. } => {}
@@ -1453,13 +1489,14 @@ impl<'a> Design<'a> {
                 ItemKind::Raw(lines) => out.push(at(ItemKind::Raw(lines.clone()))),
                 // functions are inlined at their calls; a function that is called as a method of an instance is
                 // kept until the hierarchy pass gives it ports (then removed)
-                ItemKind::Fn { name, params, ptypes, ret, body, override_at } => out.push(at(ItemKind::Fn {
+                ItemKind::Fn { name, params, ptypes, ret, body, override_at, sv } => out.push(at(ItemKind::Fn {
                     name: name.clone(),
                     params: params.clone(),
                     ptypes: ptypes.iter().map(|t| fold_dtype(t, env)).collect(),
                     ret: ret.as_ref().map(|r| fold_dtype(r, env)),
                     body: fold_expr(body, env),
                     override_at: *override_at,
+                    sv: sv.clone(),
                 })),
                 ItemKind::Fsm { enum_name, name, init, defaults, arms } => {
                     let defaults: Vec<_> = defaults.iter().map(|s| fold_stmt(s, env)).collect();
@@ -1706,18 +1743,68 @@ struct Overrides {
     types: HashMap<String, DType>,
 }
 
+/// A struct parameter `NAME` of the struct `ty`: each field is bound as `NAME.field`, from the assignment pattern that
+/// gives it (`'{field: value, default: value}`, or the values in declaration order). A value that is another constant
+/// of the struct type is taken from its pattern. Anything else is refused.
+fn bind_struct_param(name: &str, ty: &str, value: &Expr, env: &Env, ctx: &Ctx) -> Result<()> {
+    let Some(info) = env.struct_info(ty) else {
+        return Err(ctx.err(format!("parameter '{name}' has an unknown struct type '{ty}'")));
+    };
+    let pattern = match value {
+        Expr::Pattern(items) => items.clone(),
+        Expr::Ident(other, _) => match env.global_expr(other) {
+            Some(Expr::Pattern(items)) => items,
+            _ => return Err(ctx.err(format!("the value of struct parameter '{name}' must be an assignment pattern '{{...}}'"))),
+        },
+        _ => return Err(ctx.err(format!("the value of struct parameter '{name}' must be an assignment pattern '{{...}}'"))),
+    };
+    let fields: Vec<String> = info.fields.iter().map(|(f, _, _)| f.clone()).collect();
+    let mut given: Vec<(String, Expr)> = Vec::new();
+    for (k, item) in pattern.iter().enumerate() {
+        match item {
+            Expr::Keyed(key, v) => given.push((key.clone(), (**v).clone())),
+            other => match fields.get(k) {
+                Some(f) => given.push((f.clone(), other.clone())),
+                None => return Err(ctx.err(format!("the assignment pattern of '{name}' has more values than '{ty}' has fields"))),
+            },
+        }
+    }
+    let default = given.iter().find(|(k, _)| k == "default").map(|(_, v)| v.clone());
+    for f in &fields {
+        let v = match given.iter().find(|(k, _)| k == f) {
+            Some((_, v)) => v.clone(),
+            None => match &default {
+                Some(d) => d.clone(),
+                None => return Err(ctx.err(format!("the assignment pattern of '{name}' does not give field '{f}'"))),
+            },
+        };
+        env.define_expr(&format!("{name}.{f}"), fold_expr(&v, env));
+    }
+    Ok(())
+}
+
 fn bind_params(m: &Module, overrides: &Overrides, globals: &Env, ctx: &Ctx) -> Result<Env> {
     let mut env = globals.scope();
     let mut fns = globals.fns();
     fns.extend(m.items.iter().filter_map(|it| match &it.kind {
-        ItemKind::Fn { name, params, ret, body, .. } => {
-            Some((name.clone(), FnDef { params: params.clone(), ret: ret.clone(), body: body.clone() }))
+        ItemKind::Fn { name, params, ret, body, sv, .. } => {
+            Some((name.clone(), FnDef { params: params.clone(), ret: ret.clone(), body: body.clone(), sv: sv.clone() }))
         }
         _ => None,
     }));
     env.set_fns(fns);
     for p in &m.params {
         match (p.kind.as_str(), p.default.as_ref()) {
+            (kind, default) if kind.starts_with("struct ") => {
+                let value = match overrides.exprs.get(&p.name) {
+                    Some(e) => e.clone(),
+                    None => match default {
+                        Some(Arg::Expr(e)) => e.clone(),
+                        _ => return Err(ctx.err(format!("struct parameter '{}' needs a value", p.name))),
+                    },
+                };
+                bind_struct_param(&p.name, &kind["struct ".len()..], &value, &env, ctx)?;
+            }
             ("type", _) if overrides.types.contains_key(&p.name) => env.bind_type(&p.name, overrides.types[&p.name].clone()),
             ("int" | "bool", _) if overrides.ints.contains_key(&p.name) => env.bind_int(&p.name, overrides.ints[&p.name]),
             ("list", _) if overrides.lists.contains_key(&p.name) => env.define_list(&p.name, overrides.lists[&p.name].clone()),
@@ -1822,6 +1909,10 @@ fn instance_overrides(target: &Module, targs: &[(Option<String>, Arg)], env: &En
                     out.exprs.insert(param.name.clone(), fold_expr(e, env));
                 }
             },
+            // a struct parameter: its assignment pattern is bound field by field in the instance
+            (_, Arg::Expr(e)) if param.kind.starts_with("struct ") => {
+                out.exprs.insert(param.name.clone(), fold_expr(e, env));
+            }
             _ => return Err(ctx.err("type parameters of instances are not supported yet")),
         }
     }

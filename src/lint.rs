@@ -192,17 +192,18 @@ pub fn run(opts: &Options) -> Report {
                 let (file, line) = origins.locate(&e.file, e.line);
                 skip(&mut report, &file, line, e.col, e.message);
             }
-            let mut push = |file: &str, line: usize, col: usize, message: String| {
+            let mut push = |file: &str, line: usize, col: usize, message: String, category: Category| {
                 let (file, line) = origins.locate(file, line);
-                report.findings.push(Finding { category: Category::of_message(&message).as_str(), file, line, col, message });
+                report.findings.push(Finding { category: category.as_str(), file, line, col, message });
             };
-            for w in out.warnings {
-                if let Some((file, line, col, message)) = parse_warning(&w) {
-                    push(&file, line, col, message);
+            for d in out.warnings {
+                if let Some((file, line, col, message)) = parse_warning(&d.text) {
+                    push(&file, line, col, message, d.category);
                 }
             }
             for e in out.errors {
-                push(&e.file, e.line, e.col, e.message);
+                let category = Category::of_message(&e.message);
+                push(&e.file, e.line, e.col, e.message, category);
             }
         }
     }

@@ -74,15 +74,24 @@ impl Parser {
         } else if self.tok().kind == Kind::Ident && matches!(self.peek(1).text.as_str(), "=" | "," | ")" | ">") {
             "int".to_string() // parameter W = 8
         } else {
-            let kind = self.ident()?;
+            let mut kind = self.ident()?;
+            if self.accept("::") {
+                // a type of a package: `pkg::type`
+                kind = self.ident()?;
+            }
             if !PARAM_KINDS.contains(&kind.as_str()) {
-                return Err(self.fail(format!("unknown parameter type '{kind}'")));
+                // a struct type followed by the parameter's name: its fields are the parameter's
+                if self.tok().kind != Kind::Ident {
+                    return Err(self.fail(format!("unknown parameter type '{kind}'")));
+                }
+                kind = format!("struct {kind}");
             }
             if !self.accept("signed") {
                 self.accept("unsigned");
             }
             self.skip_param_range()?;
-            kind
+            // a parameter of an integer type is a constant value, as `int` is
+            if matches!(kind.as_str(), "integer" | "byte" | "shortint" | "longint" | "logic" | "reg" | "bit") { "int".to_string() } else { kind }
         };
         let name = self.ident()?;
         let bound = if matches!(kind.as_str(), "module" | "config") && self.accept(":") { Some(self.ident()?) } else { None };

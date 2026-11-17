@@ -7,6 +7,15 @@ use crate::ast::{Arg, Decl, DType, Declarator, Expr, ForHeader, Item, ItemKind, 
 
 /// The value of a literal: decimal, or unsized based (`'h03`). A sized literal (`8'hff`) keeps its width, so it is
 /// not folded.
+/// The value of a constant declaration's initialiser: as `int_of`, and a sized literal (`4'd3`) too, since a typed
+/// localparam is a constant of its value.
+pub fn const_of(e: &Expr, env: &Env) -> Option<i64> {
+    match fold_expr(e, env) {
+        Expr::Num(text) => crate::lexer::number_value(&text),
+        other => int_of(&other),
+    }
+}
+
 pub fn int_of(e: &Expr) -> Option<i64> {
     match e {
         Expr::Num(text) if !text.contains('\'') || text.starts_with('\'') => crate::lexer::number_value(text),
@@ -319,6 +328,20 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                     return value;
                 }
             }
+            // a field of a struct value (an assignment pattern, by name or as it is): `Cfg.XLEN`
+            let pattern = match &**base {
+                Expr::Ident(v, _) => env.global_expr(v),
+                other => Some(other.clone()),
+            };
+            if let Some(Expr::Pattern(items)) = pattern {
+                let field = items.iter().find_map(|i| match i {
+                    Expr::Keyed(k, v) if k == name => Some((**v).clone()),
+                    _ => None,
+                });
+                if let Some(value) = field {
+                    return fold_expr(&value, env);
+                }
+            }
             // the opcode of an instruction of an instruction set: `Isa.NAME.opcode`
             if let (Expr::Member(inner, instr, _), "opcode") = (&**base, name.as_str()) {
                 if let Expr::Ident(isa, _) = &**inner {
@@ -496,7 +519,7 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                                 })
                                 .collect();
                             let names: Vec<String> = s.methods.keys().cloned().collect();
-                            let bound = FnDef { params: def.params.clone(), ret: def.ret.clone(), body: rebind(&def.body, &def.params, recv, &fields, &names) };
+                            let bound = FnDef { params: def.params.clone(), ret: def.ret.clone(), body: rebind(&def.body, &def.params, recv, &fields, &names), sv: None };
                             return inline(method, &bound, &args, env);
                         }
                     }
@@ -506,7 +529,7 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                         let def = def_bundle.and_then(|d| {
                             d.methods.iter().find_map(|m| match m {
                                 ItemKind::Fn { name, params, ret, body, .. } if name == method && params.len() == args.len() => {
-                                    Some(FnDef { params: params.clone(), ret: ret.clone(), body: body.clone() })
+                                    Some(FnDef { params: params.clone(), ret: ret.clone(), body: body.clone(), sv: None })
                                 }
                                 _ => None,
                             })
@@ -520,7 +543,7 @@ pub fn fold_expr(e: &Expr, env: &Env) -> Expr {
                                     _ => None,
                                 }).collect())
                                 .unwrap_or_default();
-                            let bound = FnDef { params: def.params.clone(), ret: def.ret.clone(), body: rebind(&def.body, &def.params, recv, &fields, &names) };
+                            let bound = FnDef { params: def.params.clone(), ret: def.ret.clone(), body: rebind(&def.body, &def.params, recv, &fields, &names), sv: None };
                             return inline(method, &bound, &args, env);
                         }
                     }
@@ -976,8 +999,17 @@ fn tree(items: &[Expr], combine: &dyn Fn(Expr, Expr) -> Expr) -> Expr {
 
 /// A call of a pure function: the body with the arguments substituted, folded in the function's own scope.
 fn inline(name: &str, def: &FnDef, args: &[Expr], env: &Env) -> Expr {
-    let value_body = substitute(&def.body, &def.params, args);
-    let value = fold_expr(&value_body, &env.without_fn(name));
+    let value = match &def.sv {
+        None => fold_expr(&substitute(&def.body, &def.params, args), &env.without_fn(name)),
+        // a SystemVerilog body kept for its calls runs now, with the arguments bound and the caller's constants
+        Some(sv) => {
+            let mut vars: Vec<(String, Expr)> = sv.params.iter().cloned().zip(args.iter().cloned()).collect();
+            match crate::parser::fnbody::sv_build(&sv.stmts, &sv.result, &mut vars, env) {
+                Ok(value) => fold_expr(&value, &env.without_fn(name)),
+                Err(_) => return Expr::Call(Box::new(Expr::Ident(name.to_string(), (0, 0))), args.to_vec()),
+            }
+        }
+    };
     // a packed return type sets the width of the result
     match def.ret.as_ref().map(|r| r.packed.as_slice()) {
         Some([(msb, lsb)]) => {

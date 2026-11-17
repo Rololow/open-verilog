@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::ast::{Dir, DType, Expr, File, Item, ItemKind, Module, Pos, Stmt};
+use crate::diag::{Category, Diagnostic};
 use crate::error::Error;
 use crate::domains::reads_of;
 use crate::elab::fold::{fold_stmt, int_of, loop_values};
@@ -16,7 +17,7 @@ use crate::elab::{expr_any, stmt_any_expr, Env};
 ///
 /// `wrapped` lists the targets and the connections written with `.wrap()` in the source: the elaboration does not keep
 /// the marker, and a truncation written on purpose is not a width problem.
-pub fn check(modules: &[Module], envs: &HashMap<String, Env>, wrapped: &Wrapped) -> Vec<String> {
+pub fn check(modules: &[Module], envs: &HashMap<String, Env>, wrapped: &Wrapped) -> Vec<Diagnostic> {
     // the items of the generate loops and conditions count as if they were written at the top, as they are unrolled
     // in the reference (an instance in a loop drives its outputs all the same)
     let flat: Vec<Module> = modules.iter().map(|m| Module { items: flatten(&m.items), ..m.clone() }).collect();
@@ -35,8 +36,8 @@ pub fn check(modules: &[Module], envs: &HashMap<String, Env>, wrapped: &Wrapped)
         check_drivers(m, &by_name, &mut out, &mut undriven);
         for e in undriven {
             let text = format!("{}:{}:{}: warning: {}", e.file, e.line, e.col, e.message);
-            if !out.contains(&text) {
-                out.push(text);
+            if !out.iter().any(|d| d.text == text) {
+                out.push(Diagnostic { category: Category::Driver, text });
             }
         }
         check_connections(m, &by_name, &mut out);
@@ -167,11 +168,11 @@ fn flatten(items: &[Item]) -> Vec<Item> {
     out
 }
 
-fn warn(out: &mut Vec<String>, m: &Module, pos: Pos, msg: String) {
+fn warn(out: &mut Vec<Diagnostic>, m: &Module, pos: Pos, category: Category, msg: String) {
     let file = if m.origin.is_empty() { "<lint>" } else { m.origin.as_str() };
     let text = format!("{file}:{}:{}: warning: {msg}", pos.0, pos.1);
-    if !out.contains(&text) {
-        out.push(text);
+    if !out.iter().any(|d| d.text == text) {
+        out.push(Diagnostic { category, text });
     }
 }
 
@@ -416,14 +417,14 @@ fn port_width(dtype: &DType, dims: &[Expr]) -> Option<i64> {
 }
 
 /// `target = value`: the value must not be wider than the target, unless the bits dropped are the point.
-fn lint_assign(m: &Module, env: &Env, lhs: &Expr, rhs: &Expr, pos: Pos, out: &mut Vec<String>) {
+fn lint_assign(m: &Module, env: &Env, lhs: &Expr, rhs: &Expr, pos: Pos, out: &mut Vec<Diagnostic>) {
     let Some(lw) = width_of(lhs, env).map(|w| w.width) else { return };
     let name = base(lhs).unwrap_or_else(|| text(lhs));
     if let Expr::Num(t) = rhs {
         if !t.contains('\'') {
             if let Some(v) = crate::lexer::number_value(t) {
                 if v >= 0 && (64 - (v as u64).leading_zeros()) > lw {
-                    warn(out, m, pos, format!("literal {v} does not fit in {lw} bits ('{name}' is {lw} bits wide)"));
+                    warn(out, m, pos, Category::Width, format!("literal {v} does not fit in {lw} bits ('{name}' is {lw} bits wide)"));
                 }
             }
         }
@@ -449,7 +450,7 @@ fn lint_assign(m: &Module, env: &Env, lhs: &Expr, rhs: &Expr, pos: Pos, out: &mu
                 (_, Some(wa), Some(wb)) if wa + 1 == rw || wb + 1 == rw => format!(" (max({wa}, {wb}) + 1)"),
                 _ => String::new(),
             };
-            warn(out, m, pos, format!("'{name}' is {lw} bits but '{}' needs {rw} bits{how}: widen '{name}' or use .wrap() to truncate on purpose", text(rhs)));
+            warn(out, m, pos, Category::Carry, format!("'{name}' is {lw} bits but '{}' needs {rw} bits{how}: widen '{name}' or use .wrap() to truncate on purpose", text(rhs)));
             return;
         }
     }
@@ -457,6 +458,7 @@ fn lint_assign(m: &Module, env: &Env, lhs: &Expr, rhs: &Expr, pos: Pos, out: &mu
         out,
         m,
         pos,
+        Category::Width,
         format!(
             "'{name}' is {lw} bits but the value is {rw} bits wide: the upper {} bits are dropped (use .wrap() or a slice to truncate on purpose)",
             rw - lw
@@ -465,7 +467,7 @@ fn lint_assign(m: &Module, env: &Env, lhs: &Expr, rhs: &Expr, pos: Pos, out: &mu
 }
 
 /// The width checks: assignments, and the connections of the instances to the ports they drive.
-fn check_widths(m: &Module, env: Option<&Env>, by_name: &HashMap<&str, &Module>, wrapped: &Wrapped, out: &mut Vec<String>) {
+fn check_widths(m: &Module, env: Option<&Env>, by_name: &HashMap<&str, &Module>, wrapped: &Wrapped, out: &mut Vec<Diagnostic>) {
     let Some(env) = env else { return };
     let key = base_module(&m.name);
     for it in &m.items {
@@ -505,14 +507,14 @@ fn check_widths(m: &Module, env: Option<&Env>, by_name: &HashMap<&str, &Module>,
                     if let Expr::Num(t) = e {
                         if let Some(v) = crate::lexer::number_value(t).filter(|v| *v >= 0 && t.chars().all(|c| c.is_ascii_digit())) {
                             if (v as u64) >> pw.min(63) != 0 {
-                                warn(out, m, it.pos, format!("port '{p}' of '{}' is {pw} bits: literal {t} does not fit", i.module));
+                                warn(out, m, it.pos, Category::Width, format!("port '{p}' of '{}' is {pw} bits: literal {t} does not fit", i.module));
                             }
                         }
                         continue;
                     }
                     if let Some(ew) = sized(e, env) {
                         if i64::from(ew) != pw {
-                            warn(out, m, it.pos, format!("port '{p}' of '{}' is {pw} bits but is connected to '{}' ({ew} bits)", i.module, text(e)));
+                            warn(out, m, it.pos, Category::Width, format!("port '{p}' of '{}' is {pw} bits but is connected to '{}' ({ew} bits)", i.module, text(e)));
                         }
                     }
                 }
@@ -596,7 +598,7 @@ fn agree_below_target(op: &str, a: &Expr, b: &Expr, modular: Option<u32>, env: &
     })
 }
 
-fn sign_expr(m: &Module, env: &Env, e: &Expr, modular: Option<u32>, pos: Pos, out: &mut Vec<String>) {
+fn sign_expr(m: &Module, env: &Env, e: &Expr, modular: Option<u32>, pos: Pos, out: &mut Vec<Diagnostic>) {
     match e {
         Expr::Binary(op, a, b, _) => {
             let mixed_op = matches!(op.as_str(), "+" | "-" | "*" | "/" | "%" | "&" | "|" | "^" | "==" | "!=" | "<" | "<=" | ">" | ">=");
@@ -609,12 +611,12 @@ fn sign_expr(m: &Module, env: &Env, e: &Expr, modular: Option<u32>, pos: Pos, ou
                         let mut leaves = Vec::new();
                         signed_leaves(if sa { a } else { b }, env, &mut leaves);
                         if let Some((name, _)) = leaves.first() {
-                            warn(out, m, pos, format!("'{name}' is signed but this expression is unsigned in SV: '{}' mixes it with an unsigned value", text(e)));
+                            warn(out, m, pos, Category::Sign, format!("'{name}' is signed but this expression is unsigned in SV: '{}' mixes it with an unsigned value", text(e)));
                         }
                         let width = [width_of(a, env), width_of(b, env)].into_iter().flatten().map(|w| w.width).max();
                         for (name, w) in &leaves {
                             if let Some(width) = width.filter(|width| width > w) {
-                                warn(out, m, pos, format!("'{name}' is extended from {w} to {width} bits with zeros, not with its sign"));
+                                warn(out, m, pos, Category::Sign, format!("'{name}' is extended from {w} to {width} bits with zeros, not with its sign"));
                             }
                         }
                     }
@@ -644,7 +646,7 @@ fn sign_expr(m: &Module, env: &Env, e: &Expr, modular: Option<u32>, pos: Pos, ou
 
 /// The signedness of the operations: a signed operand mixed with an unsigned one (see `sign_expr`). A value written with
 /// `.wrap()` is truncated to its target, so the operations that agree below that width are not reported.
-fn check_signs(m: &Module, env: Option<&Env>, wrapped: &Wrapped, out: &mut Vec<String>) {
+fn check_signs(m: &Module, env: Option<&Env>, wrapped: &Wrapped, out: &mut Vec<Diagnostic>) {
     let Some(env) = env else { return };
     let key = base_module(&m.name);
     let modular = |lhs: &Expr, pos: Pos| if target_wrapped(&key, lhs, pos, wrapped) { sized(lhs, env) } else { None };
@@ -670,9 +672,9 @@ fn check_signs(m: &Module, env: Option<&Env>, wrapped: &Wrapped, out: &mut Vec<S
 
 /// A shift of a sum or a product: SV evaluates the sum at the widest of the target and the operands, so the bits above
 /// that width are gone before the shift (`y = (a * b) >> 8` on 8 bits). A signed operand is not checked here (`sign`).
-fn check_sizes(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
+fn check_sizes(m: &Module, env: Option<&Env>, out: &mut Vec<Diagnostic>) {
     let Some(env) = env else { return };
-    fn walk(m: &Module, env: &Env, e: &Expr, target: u32, pos: Pos, out: &mut Vec<String>) {
+    fn walk(m: &Module, env: &Env, e: &Expr, target: u32, pos: Pos, out: &mut Vec<Diagnostic>) {
         match e {
             Expr::Binary(op, l, r, _) if matches!(op.as_str(), ">>" | ">>>") => {
                 if let Expr::Binary(inner, a, b, _) = &**l {
@@ -682,7 +684,7 @@ fn check_sizes(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
                         if let (Some(exact), Some(operands)) = (exact, operands) {
                             let evaluated = operands.max(target);
                             if exact > evaluated {
-                                warn(out, m, pos, format!("'{}' is evaluated on {evaluated} bits before '>> {}': the bits above {evaluated} are lost (widen the operands, or cast the sum to {exact} bits)", text(l), text(r)));
+                                warn(out, m, pos, Category::Sizing, format!("'{}' is evaluated on {evaluated} bits before '>> {}': the bits above {evaluated} are lost (widen the operands, or cast the sum to {exact} bits)", text(l), text(r)));
                             }
                         }
                     }
@@ -750,7 +752,7 @@ fn is_wrapped(module: &str, name: &str, pos: Pos, wrapped: &Wrapped) -> bool {
 /// A combinational loop: a signal whose value depends on itself through the assignments that drive it (`assign b = y ^
 /// a; assign y = b;`). The graph has an edge from each target to the names its value reads. A block does not count the
 /// reads of the names it assigns: their value is set before it is read. The conditions of an `if` are not followed yet.
-fn check_loops(m: &Module, out: &mut Vec<String>) {
+fn check_loops(m: &Module, out: &mut Vec<Diagnostic>) {
     let mut edges: BTreeMap<String, Vec<(String, Pos)>> = BTreeMap::new();
     let mut add = |lhs: &Expr, rhs: &Expr, pos: Pos, written_here: &BTreeSet<String>| {
         let mut reads = BTreeSet::new();
@@ -791,7 +793,7 @@ fn check_loops(m: &Module, out: &mut Vec<String>) {
             .min()
             .unwrap_or((1, 1));
         let names: Vec<String> = group.iter().map(|g| format!("'{g}'")).collect();
-        warn(out, m, pos, format!("combinational loop through {}: the value would never settle (break it with a register)", names.join(", ")));
+        warn(out, m, pos, Category::Loop, format!("combinational loop through {}: the value would never settle (break it with a register)", names.join(", ")));
         reported.extend(group);
     }
 }
@@ -802,7 +804,7 @@ fn check_loops(m: &Module, out: &mut Vec<String>) {
 /// register adds 1. An expression whose operands come from one input with different latencies (one of them is a
 /// register and the other is not, or they are not the same number of registers apart) is reported: the earlier value
 /// needs a `.delay(n)`. A signal with no latency (a loop of registers, or two paths of different lengths) is left out.
-fn check_latency(m: &Module, out: &mut Vec<String>) {
+fn check_latency(m: &Module, out: &mut Vec<Diagnostic>) {
     // (source, target, registers on the way, where)
     let mut edges: Vec<(String, String, u32, Pos)> = Vec::new();
     // the names read by each assignment, and where it is
@@ -882,7 +884,7 @@ fn check_latency(m: &Module, out: &mut Vec<String>) {
                 continue;
             }
             let list: Vec<String> = seen.iter().map(|(v, n)| format!("'{n}' is {v} register(s) from '{inp}'")).collect();
-            warn(out, m, *pos, format!("the operands of this expression arrive at different latencies: {} (delay the earlier one with .delay(n))", list.join(", ")));
+            warn(out, m, *pos, Category::Latency, format!("the operands of this expression arrive at different latencies: {} (delay the earlier one with .delay(n))", list.join(", ")));
         }
     }
 }
@@ -954,7 +956,7 @@ fn reach(edges: &BTreeMap<String, Vec<(String, Pos)>>, start: &str) -> BTreeSet<
 }
 
 /// A combinational block must assign each signal on every path, or a latch is inferred.
-fn check_latches(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
+fn check_latches(m: &Module, env: Option<&Env>, out: &mut Vec<Diagnostic>) {
     for it in &m.items {
         let ItemKind::AlwaysComb(body) = &it.kind else { continue };
         let assigned: BTreeSet<String> = assignments(body).iter().flat_map(|(lhs, _, _, _)| parts(lhs)).filter_map(base).collect();
@@ -964,7 +966,7 @@ fn check_latches(m: &Module, env: Option<&Env>, out: &mut Vec<String>) {
             if n.starts_with("ov_l") && n[4..].contains('_') {
                 continue;
             }
-            warn(out, m, it.pos, format!("'{n}' is not assigned on every path of this always_comb (a latch would be inferred): add a default value"));
+            warn(out, m, it.pos, Category::Latch, format!("'{n}' is not assigned on every path of this always_comb (a latch would be inferred): add a default value"));
         }
     }
 }
@@ -980,7 +982,7 @@ struct Driver {
 }
 
 /// `undriven` gets the output ports that nothing drives (an error of the compiler, a warning of the lint).
-fn check_drivers(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<String>, undriven: &mut Vec<Error>) {
+fn check_drivers(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<Diagnostic>, undriven: &mut Vec<Error>) {
     let mut drivers: BTreeMap<String, Vec<Driver>> = BTreeMap::new();
     let mut maybe_driven: BTreeSet<String> = BTreeSet::new();
     let add = |drivers: &mut BTreeMap<String, Vec<Driver>>, lhs: &Expr, item: usize, kind: String, pos: Pos| {
@@ -1044,7 +1046,7 @@ fn check_drivers(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<Str
         for (i, a) in list.iter().enumerate() {
             for b in &list[i + 1..] {
                 if a.item != b.item && (a.target == b.target || a.target == *n || b.target == *n) {
-                    warn(out, m, b.pos, format!("'{n}' is driven from several places ({} and {})", a.kind, b.kind));
+                    warn(out, m, b.pos, Category::Driver, format!("'{n}' is driven from several places ({} and {})", a.kind, b.kind));
                 }
             }
         }
@@ -1062,7 +1064,7 @@ fn check_drivers(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<Str
 }
 
 /// An input port of an instanced module that has no default must be connected (when every connection is named).
-fn check_connections(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<String>) {
+fn check_connections(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec<Diagnostic>) {
     for it in &m.items {
         let ItemKind::Instance(i) = &it.kind else { continue };
         let Some(target) = by_name.get(i.module.as_str()) else { continue };
@@ -1074,14 +1076,14 @@ fn check_connections(m: &Module, by_name: &HashMap<&str, &Module>, out: &mut Vec
         let read: BTreeSet<String> = target.items.iter().flat_map(mentioned).collect();
         for q in &target.ports {
             if q.dir == Dir::Input && q.default.is_none() && !q.name.starts_with("ov_") && !connected.contains(q.name.as_str()) && read.contains(&q.name) {
-                warn(out, m, it.pos, format!("input port '{}' of '{}' is not connected", q.name, i.module));
+                warn(out, m, it.pos, Category::Connection, format!("input port '{}' of '{}' is not connected", q.name, i.module));
             }
         }
     }
 }
 
 /// Assignment style: `<=` in a combinational block, and `=` on a signal that another process reads in a clocked block.
-fn check_process_style(m: &Module, out: &mut Vec<String>) {
+fn check_process_style(m: &Module, out: &mut Vec<Diagnostic>) {
     let outputs: BTreeSet<&str> = m.ports.iter().filter(|p| p.dir != Dir::Input).map(|p| p.name.as_str()).collect();
     let mut readers: HashMap<String, BTreeSet<usize>> = HashMap::new();
     for (idx, it) in m.items.iter().enumerate() {
@@ -1093,7 +1095,7 @@ fn check_process_style(m: &Module, out: &mut Vec<String>) {
         match &it.kind {
             ItemKind::AlwaysComb(body) => {
                 for (_, _, _, pos) in assignments(body).into_iter().filter(|(_, _, nb, _)| *nb) {
-                    warn(out, m, pos, "non-blocking assignment (<=) inside always_comb: use =".into());
+                    warn(out, m, pos, Category::Process, "non-blocking assignment (<=) inside always_comb: use =".into());
                 }
             }
             ItemKind::Always { body, keyword, .. } => {
@@ -1107,7 +1109,7 @@ fn check_process_style(m: &Module, out: &mut Vec<String>) {
                     if keyword == "always_ff" {
                         // the temporaries the compiler writes (`ov_...`, as for a `break`) are not the author's
                         if let Some(n) = names.iter().find(|n| !n.starts_with("ov_")) {
-                            warn(out, m, pos, format!("blocking assignment (=) to '{n}' inside always_ff: use <= (a register takes its value at the clock edge)"));
+                            warn(out, m, pos, Category::Process, format!("blocking assignment (=) to '{n}' inside always_ff: use <= (a register takes its value at the clock edge)"));
                         }
                         continue;
                     }
@@ -1115,7 +1117,7 @@ fn check_process_style(m: &Module, out: &mut Vec<String>) {
                         readers.get(n.as_str()).is_some_and(|r| r.iter().any(|&j| j != idx)) || outputs.contains(n.as_str())
                     });
                     if let Some(n) = shared {
-                        warn(out, m, pos, format!("blocking assignment (=) to '{n}' inside a clocked block while another process reads it (a race): use <="));
+                        warn(out, m, pos, Category::Process, format!("blocking assignment (=) to '{n}' inside a clocked block while another process reads it (a race): use <="));
                     }
                 }
             }
