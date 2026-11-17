@@ -23,6 +23,8 @@ struct Branch {
     active: bool,
     taken: bool,
     parent_active: bool,
+    /// The line of the `ifdef`: an unclosed one is reported there.
+    line: usize,
 }
 
 pub struct Preprocessor {
@@ -217,7 +219,7 @@ impl Preprocessor {
                     match name.as_str() {
                         "ifdef" | "ifndef" => {
                             let cond = self.macros.contains_key(&macro_name) == (name == "ifdef");
-                            stack.push(Branch { active: active && cond, taken: cond, parent_active: active });
+                            stack.push(Branch { active: active && cond, taken: cond, parent_active: active, line: k + 1 });
                         }
                         _ if stack.is_empty() => {
                             return Err(Error::new(format!("`{name} without `ifdef"), file, k + 1, 1));
@@ -275,8 +277,8 @@ impl Preprocessor {
             self.emit(&mut out, expanded, file, k + 1);
             k += 1;
         }
-        if !stack.is_empty() {
-            return Err(Error::new("`ifdef without `endif", file, lines.len(), 1));
+        if let Some(open) = stack.last() {
+            return Err(Error::new("`ifdef without `endif", file, open.line, 1));
         }
         Ok(out)
     }

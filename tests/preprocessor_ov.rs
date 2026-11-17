@@ -15,3 +15,11 @@ fn an_error_after_the_directives_is_on_its_own_line() {
     let Err(err) = ovc::compile(src, "p.ov") else { panic!("the design must be refused") };
     assert_eq!((err.line, err.col), (4, 3), "{}", err.message);
 }
+
+#[test]
+fn an_unclosed_ifdef_is_reported_on_its_own_line() {
+    let src = "module M(input logic a, output logic y) {\n  `ifdef X\n  assign y = a;\n}\n";
+    let Err(err) = ovc::compile(src, "p.ov") else { panic!("the design must be refused") };
+    assert_eq!((err.line, err.col), (2, 1), "{}", err.message);
+    assert!(err.message.contains("`ifdef without `endif"), "{}", err.message);
+}

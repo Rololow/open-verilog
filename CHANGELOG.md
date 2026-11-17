@@ -5,6 +5,19 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 
 ## [Unreleased]
 
+### Added
+- `loop`: a combinational signal that depends on itself through the assignments that drive it (`assign y = y & a;`, or
+  two signals that drive each other) is an error by default. The check follows signal names, not array elements, and
+  does not follow the conditions of an `if` yet (see the `loop` section of the Lints page).
+- `process`: a blocking assignment (`=`) inside an `always_ff` is a warning, whatever the other processes read.
+- `latency`: the operands of one expression reach it after a different number of registers from the same input (`a & r`
+  with `r <= a;`), so a warning asks for `.delay(n)`. Counted within one module; a signal on a register loop is not compared.
+
+### Fixed
+- A deeply nested source (a long chain of parentheses, or of `if`s) is compiled. The parser ran on threads with the
+  default stack, and such a file aborted the process with `has overflowed its stack`, with no position.
+- An unclosed `` `ifdef `` is reported on its own line, not at the end of the file.
+
 ## [0.2.0] - 2026-11-16
 
 ### Added

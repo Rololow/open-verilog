@@ -113,6 +113,17 @@ fn collect(paths: &[String]) -> Result<Vec<PathBuf>, String> {
 }
 
 fn main() -> ExitCode {
+    // the parser and the elaboration recurse on the nesting of the source (parentheses, `if` chains): they run on a thread
+    // with a large stack, so that a deep file is compiled rather than aborting the process
+    std::thread::Builder::new()
+        .stack_size(512 << 20)
+        .spawn(real_main)
+        .expect("start the compiler thread")
+        .join()
+        .unwrap_or(ExitCode::from(2))
+}
+
+fn real_main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     // `ovc lint ...`: the checks of plain SystemVerilog files (see `lint`)
     if argv.first().map(String::as_str) == Some("lint") {
@@ -189,14 +200,18 @@ fn parse_units(paths: &[PathBuf]) -> Result<Vec<(String, String, File)>, String>
         let jobs: Vec<_> = paths
             .iter()
             .map(|path| {
-                s.spawn(move || {
-                    let name = path.to_string_lossy().replace('\\', "/");
-                    let src = std::fs::read_to_string(path).map_err(|e| format!("ovc: {name}: {e}"))?;
-                    match ovc::parser::parse_file(&src, &name) {
-                        Ok(file) => Ok((name, src, file)),
-                        Err(e) => Err(e.render(&src)),
-                    }
-                })
+                // the parser recurses on the nesting of the source: each file has a large stack, as the main worker does
+                thread::Builder::new()
+                    .stack_size(512 << 20)
+                    .spawn_scoped(s, move || {
+                        let name = path.to_string_lossy().replace('\\', "/");
+                        let src = std::fs::read_to_string(path).map_err(|e| format!("ovc: {name}: {e}"))?;
+                        match ovc::parser::parse_file(&src, &name) {
+                            Ok(file) => Ok((name, src, file)),
+                            Err(e) => Err(e.render(&src)),
+                        }
+                    })
+                    .expect("start the parser thread")
             })
             .collect();
         jobs.into_iter().map(|j| j.join().expect("parser thread panicked")).collect()
