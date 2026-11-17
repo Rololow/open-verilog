@@ -1,5 +1,7 @@
 # ovc (Rust)
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24311669.svg)](https://doi.org/10.5281/zenodo.24311669)
+
 Compiler for **Open Verilog** (`.ov`), a SystemVerilog extension, to plain SystemVerilog, and its language server
 `ovc-lsp`. This is the Rust port of the Python reference compiler (`ovc/` of the original repository), which stays the
 reference for behaviour and output: a construct is done when the compiler's output for the examples is byte-identical
