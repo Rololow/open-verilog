@@ -11,5 +11,6 @@ authors:
 version: 0.2.1
 date-released: 2026-11-17
 url: "https://github.com/Rololow/open-verilog"
+doi: 10.5281/zenodo.24313865
 
 license: MIT
