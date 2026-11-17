@@ -1,7 +1,7 @@
 //! Recursive-descent parser for .ov. Expressions use precedence climbing.
 
 mod expr;
-mod fnbody;
+pub(crate) mod fnbody;
 mod item;
 mod defs;
 mod module;
@@ -58,6 +58,8 @@ pub struct Parser {
     no_index: bool,
     /// Enums declared inside a module: they are global, so they move to the file when it is parsed.
     hoisted_enums: Vec<crate::ast::EnumDef>,
+    /// Structs declared inside a module (`typedef struct packed`): global too, so they move to the file as well.
+    hoisted_structs: Vec<crate::ast::StructDef>,
     /// `for (a, b) in list`: the bindings of the names, given to the body of the loop.
     unpack: Vec<(String, crate::ast::Expr)>,
     /// The top-level functions defined so far, with the line of their definition: one definition per name.
@@ -88,10 +90,11 @@ pub fn parse_file(src: &str, file: &str) -> Result<File> {
 /// lint removes the comments from `src`).
 pub fn parse_file_with_notes(src: &str, notes: &str, file: &str) -> Result<File> {
     let toks = lex(src, file)?;
-    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new(), loops: 0 };
+    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), hoisted_structs: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new(), loops: 0 };
     let mut out = File::default();
     p.top_items(&mut out, None)?;
     out.enums.append(&mut p.hoisted_enums);
+    out.structs.append(&mut p.hoisted_structs);
     out.imports = p.imports.into_iter().map(|(name, pos)| (name, pos, file.to_string())).collect();
     out.typedef_origin = out.typedefs.iter().map(|(name, _)| (name.clone(), file.to_string())).collect();
     if file.ends_with(".sv") {
@@ -135,7 +138,7 @@ fn annotate(out: &mut File, src: &str, file: &str) -> Result<()> {
 /// One expression, as written in `.ov` (the whole text is the expression).
 pub fn parse_expr_text(src: &str, file: &str) -> Result<crate::ast::Expr> {
     let toks = lex(src, file)?;
-    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new(), loops: 0 };
+    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), hoisted_structs: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new(), loops: 0 };
     let e = p.parse_expr(0)?;
     if p.tok().kind != Kind::Eof {
         return Err(p.fail(format!("unexpected '{}' after the expression", p.tok().text)));
@@ -146,7 +149,7 @@ pub fn parse_expr_text(src: &str, file: &str) -> Result<crate::ast::Expr> {
 /// A type on the command line, such as the top module with its arguments: `DarkRiscv<DarkCfg with { csr = true }>`.
 pub fn parse_top(src: &str, file: &str) -> Result<crate::ast::DType> {
     let toks = lex(src, file)?;
-    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new(), loops: 0 };
+    let mut p = Parser { toks, i: 0, file: file.to_string(), in_generic: false, in_ff: false, no_index: false, hoisted_enums: Vec::new(), hoisted_structs: Vec::new(), unpack: Vec::new(), imports: Vec::new(), fn_defs: Vec::new(), loops: 0 };
     let dt = p.parse_dtype(false)?;
     if p.tok().kind != Kind::Eof {
         return Err(p.fail(format!("unexpected '{}' after the top module", p.tok().text)));

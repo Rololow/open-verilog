@@ -139,6 +139,8 @@ pub enum ItemKind {
     Comment(String),
     /// Lines copied verbatim (the checks of a pipeline).
     Raw(Vec<String>),
+    /// `typedef <type> name;` inside a module: the name is a type of that module only.
+    LocalType { name: String, dtype: DType },
     /// `val name = expr;`: a named signal whose width is inferred losslessly.
     Val { name: String, expr: Expr },
     /// `reset NAME [low] [async];`: the module's reset.
@@ -149,7 +151,8 @@ pub enum ItemKind {
     Fsm { enum_name: String, name: String, init: String, defaults: Vec<Stmt>, arms: Vec<(String, Stmt)> },
     /// A pure function `fn name(params) [-> type] { return body; }`; calls are inlined.
     /// `override` (the position of its `fn`): the function must replace one of the base module's.
-    Fn { name: String, params: Vec<String>, ptypes: Vec<DType>, ret: Option<DType>, body: Expr, override_at: Option<(usize, usize)> },
+    /// `sv` is the body of a SystemVerilog function kept for its calls (its loops fold with the caller's constants).
+    Fn { name: String, params: Vec<String>, ptypes: Vec<DType>, ret: Option<DType>, body: Expr, override_at: Option<(usize, usize)>, sv: Option<crate::parser::fnbody::SvBody> },
     /// A procedural function: statements, inlined at each statement-level call (the parser expands them).
     Proc { name: String, params: Vec<String>, body: Vec<Stmt> },
     /// `memmap io "desc" { DEV @ base size n [irq k [= line]] ... }`: the devices of a bus, placed in the module.

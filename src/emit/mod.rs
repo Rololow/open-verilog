@@ -130,6 +130,8 @@ impl Emitter {
                 self.line(&format!("// same clock domain: {}", names.join(", ")));
                 Ok(())
             }
+            // a type of the module: the declarations that use it are already in their folded form
+            ItemKind::LocalType { .. } => Ok(()),
             ItemKind::PortDomain { port, clock } => {
                 self.line(&format!("// {port} is in the clock domain of {clock}"));
                 Ok(())

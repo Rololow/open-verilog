@@ -109,7 +109,23 @@ impl Parser {
                 self.i += 2; // SV cast: 8'(x)
                 let arg = self.parse_expr(0)?;
                 self.expect(")")?;
-                e = Expr::Cast(Box::new(e), Box::new(arg));
+                let width = match &e {
+                    Expr::Ident(n, _) => match n.as_str() {
+                        "bit" | "logic" | "reg" => Some("1"),
+                        "byte" => Some("8"),
+                        "shortint" => Some("16"),
+                        "int" | "integer" => Some("32"),
+                        "longint" => Some("64"),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let sign_only = matches!(&e, Expr::Ident(n, _) if n == "unsigned" || n == "signed");
+                e = match width {
+                    Some(w) => Expr::Cast(Box::new(Expr::Num(w.to_string())), Box::new(arg)),
+                    None if sign_only => arg,
+                    None => Expr::Cast(Box::new(e), Box::new(arg)),
+                };
             } else {
                 return Ok(e);
             }

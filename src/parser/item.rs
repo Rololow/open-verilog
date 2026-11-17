@@ -247,7 +247,7 @@ impl Parser {
                 let ret = if self.accept("->") { Some(self.parse_dtype(false)?) } else { None };
                 let start = self.i;
                 match self.parse_fn_body("}") {
-                    Ok(body) => Ok(vec![ItemKind::Fn { name, params, ptypes, ret, body, override_at: None }]),
+                    Ok(body) => Ok(vec![ItemKind::Fn { name, params, ptypes, ret, body, override_at: None, sv: None }]),
                     Err(err) => {
                         // not a pure function: a procedural one, whose statements are inlined at its calls
                         self.i = start;
@@ -369,6 +369,49 @@ impl Parser {
                 let mut d = self.parse_decl()?;
                 d.is_async = true;
                 Ok(vec![ItemKind::Decl(d)])
+            }
+            "typedef" if self.peek(1).text == "enum" => {
+                // a module's enum type is hoisted with the module's enums
+                self.i += 1;
+                let def = self.parse_typedef_enum()?;
+                self.hoisted_enums.push(def);
+                Ok(vec![])
+            }
+            "typedef" if self.peek(1).text == "struct" => {
+                // a module's struct type is global, like its enums: it is hoisted to the file
+                self.i += 1;
+                let mut def = self.parse_struct_def()?;
+                def.name = self.ident()?;
+                self.expect(";")?;
+                self.hoisted_structs.push(def);
+                Ok(vec![])
+            }
+            "typedef" => {
+                self.i += 1;
+                let dtype = self.parse_dtype(false)?;
+                let name = self.ident()?;
+                self.expect(";")?;
+                Ok(vec![ItemKind::LocalType { name, dtype }])
+            }
+            "struct" if self.peek(1).text == "packed" || self.peek(1).text == "{" => {
+                // `struct packed { ... } a, b [dims];`: an anonymous struct type, named after its first signal and hoisted
+                let line = self.tok().line;
+                let mut def = self.parse_struct_def()?;
+                let mut decls = Vec::new();
+                loop {
+                    let name = self.ident()?;
+                    let dims = self.parse_dims()?;
+                    decls.push(Declarator { name, dims, init: None });
+                    if !self.accept(",") {
+                        break;
+                    }
+                }
+                self.expect(";")?;
+                let type_name = format!("ov_struct_{}_{line}", decls[0].name);
+                def.name = type_name.clone();
+                self.hoisted_structs.push(def);
+                let dtype = DType { name: type_name, targs: Vec::new(), signed: false, packed: Vec::new() };
+                Ok(vec![ItemKind::Decl(Decl { dtype, decls, is_const: false, is_async: false })])
             }
             "enum" => {
                 // a module's enum is global: it is hoisted to the file

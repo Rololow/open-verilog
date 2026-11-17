@@ -19,6 +19,8 @@ pub struct FnDef {
     pub params: Vec<String>,
     pub ret: Option<DType>,
     pub body: crate::ast::Expr,
+    /// The statements of a body kept for its calls (see `ItemKind::Fn`).
+    pub sv: Option<crate::parser::fnbody::SvBody>,
 }
 
 /// A view: the signal it names, its instruction set and its format.

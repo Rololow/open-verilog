@@ -25,12 +25,12 @@ jobs:
             target: x86_64-unknown-linux-gnu
             suffix: linux-x64
             ext: ""
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
             suffix: macos-arm64
             ext: ""
           # Intel binaries are cross-compiled on the Apple Silicon runner: the macos-13 runners queue for a very long time.
-          - os: macos-14
+          - os: macos-latest
             target: x86_64-apple-darwin
             suffix: macos-x64
             ext: ""

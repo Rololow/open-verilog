@@ -5,6 +5,8 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-17
+
 ### Added
 - `loop`: a combinational signal that depends on itself through the assignments that drive it (`assign y = y & a;`, or
   two signals that drive each other) is an error by default. The check follows signal names, not array elements, and
@@ -14,9 +16,20 @@ and the versions follow [Semantic Versioning](https://semver.org/) (`0.x`: any r
   with `r <= a;`), so a warning asks for `.delay(n)`. Counted within one module; a signal on a register loop is not compared.
 - SystemVerilog `function`s inside a module are read: the header with its inputs in the parentheses or after it, a return
   of dimensions alone (`function [15:0] f;`), and a body of assignments and `if`/`else` in `begin`/`end`. A call is inlined as
-  a conditional. A body with a loop is still refused, and its module stays not analyzed.
+  a conditional, and a `case` (with ranges) is an if chain. Assertions and system-task messages in a function change no
+  value and are skipped; a `void` function that only checks is read as a comment. A `for` loop with constant bounds is
+  unrolled, and a part assignment (`x[7:4] = ...`, `x[i +: 4] = ...`) keeps the other bits; the parts of a conditional
+  or of a concatenation are sliced as SystemVerilog allows. A local with a bit never assigned on some path is refused,
+  not read as zero. A function whose loop bound is a constant of its caller (a field of a struct argument, a localparam)
+  is unrolled at each call. A typed `localparam` (`localparam logic [3:0] N = 4'd3`) is a constant of its value, as an
+  untyped one is, not a signal. `automatic` and `static` locals are accepted. A `typedef struct packed` inside a module is
+  hoisted to the file like its enums, and `struct packed { ... } a, b;` declares its signals with an implicit type. A loop whose bound is an input, and an
+  `output` argument is refused with its reason (a function has one result), and its module stays not analyzed.
 - A function of a package is read the same way. A parameter of an integer type (`parameter integer W = 8`, also `logic`,
   `bit`, `byte`, `shortint`, `longint`, `reg`) is a constant value, as `int` is.
+- A parameter of a struct type (`parameter pkg::cfg_t Cfg = '{W: 8, K: 1}`) is read field by field: `Cfg.W` is a constant
+  of the module, and an instance can give its own pattern. A struct constant must be an assignment pattern; a cast such as
+  `cfg_t'(0)` is refused with that message.
 
 ### Fixed
 - A deeply nested source (a long chain of parentheses, or of `if`s) is compiled. The parser ran on threads with the
